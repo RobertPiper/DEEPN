@@ -30,9 +30,9 @@ class process():
                 protein_sequence += 'X'
         return protein_sequence
 
-    def _complement(self, s): 
-        letters = list(s) 
-        letters = [self.base_complement[base] for base in letters]
+    def _complement(self, s):
+        letters = list(s.upper())
+        letters = [self.base_complement.get(base, 'N') for base in letters]
         return ''.join(letters)
 
     def reverse_complement(self, s):

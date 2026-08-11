@@ -2,10 +2,9 @@ import os
 import sys
 import time
 import pyqtgraph as pg
-from PyQt4 import QtCore, QtGui, uic
+from PyQt5 import QtCore, QtGui, QtWidgets, uic
 import numpy as np
 
-app = QtGui.QApplication(sys.argv)
 ui_path = os.path.join(os.path.curdir, 'ui', 'QBGraph.ui')
 if sys.platform == 'win32':
     ui_path = os.path.join(os.path.curdir, 'ui', 'Windows', 'QBGraph.ui')
@@ -128,7 +127,7 @@ class BarGraphItem(pg.GraphicsObject):
             self.drawPicture()
         return QtCore.QRectF(self.picture.boundingRect())
 
-class QBPlot(QtGui.QDialog, form_class):
+class QBPlot(QtWidgets.QDialog, form_class):
     def __init__(self, xtitle, ytitle,*args):
         super(QBPlot, self).__init__(*args)
         self.setupUi(self)
@@ -150,13 +149,13 @@ class QBPlot(QtGui.QDialog, form_class):
         self.legend_added = 0
 
     def add_legends(self):
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'1A64B0','width': 4}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1A64B0','width': 4}))
         self.plot_widget.plotItem.legend.addItem(style, "In ORF")
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'1CC5FF','width': 4}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1CC5FF','width': 4}))
         self.plot_widget.plotItem.legend.addItem(style, "Upstream")
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'777777','width': 4}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#777777','width': 4}))
         self.plot_widget.plotItem.legend.addItem(style, "Downstream / Out of Frame")
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'D13A26','width': 4}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#D13A26','width': 4}))
         self.plot_widget.plotItem.legend.addItem(style, "Start/Stop of CDS")
 
     def plot(self, data, start, stop):
@@ -193,23 +192,23 @@ class QBPlot(QtGui.QDialog, form_class):
             y_neg = [-1, -1]
 
         self.plot_widget.addItem(BarGraphItem(x=x_blue, height=y_blue, width=5,
-                                              pen=pg.mkPen({'color':'1A64B0','width': 1}),
-                                              brush='1A64B0'))
+                                              pen=pg.mkPen({'color':'#1A64B0','width': 1}),
+                                              brush='#1A64B0'))
 
 
         self.plot_widget.addItem(BarGraphItem(x=x_lightblue, height=y_lightblue, width=5,
-                                              pen=pg.mkPen({'color':'1CC5FF','width': 1}),
-                                              brush='1CC5FF'))
+                                              pen=pg.mkPen({'color':'#1CC5FF','width': 1}),
+                                              brush='#1CC5FF'))
 
 
         self.plot_widget.addItem(BarGraphItem(x=x_grey, height=y_grey, width=5,
-                                              pen=pg.mkPen({'color':'777777','width': 1}),
-                                              brush='777777'))
+                                              pen=pg.mkPen({'color':'#777777','width': 1}),
+                                              brush='#777777'))
 
 
         self.plot_widget.addItem(BarGraphItem(x=x_neg, height=y_neg, width=20,
-                                              pen=pg.mkPen({'color':'D13A26','width': 1}),
-                                              brush='D13A26'))
+                                              pen=pg.mkPen({'color':'#D13A26','width': 1}),
+                                              brush='#D13A26'))
 
         if self.legend_added == 0:
             self.add_legends()
@@ -235,11 +234,11 @@ class RDPlot(pg.PlotWidget):
         self.legend_added = 0
 
     def add_legends(self):
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'1A64B0','width': 8}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1A64B0','width': 8}))
         self.plotItem.legend.addItem(style, "In ORF")
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'777777','width': 8}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#777777','width': 8}))
         self.plotItem.legend.addItem(style, "Not in CDS")
-        style = pg.PlotDataItem(pen=pg.mkPen({'color':'D13A26','width': 8}))
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#D13A26','width': 8}))
         self.plotItem.legend.addItem(style, "Start/Stop of CDS")
 
     def plot(self, data, start, stop):
@@ -268,18 +267,18 @@ class RDPlot(pg.PlotWidget):
             y_neg = [-1, -1]
 
         self.addItem(BarGraphItem(x=x_blue, height=y_blue, width=15,
-                                  pen=pg.mkPen({'color':'1A64B0','width': 1}),
-                                  brush='1A64B0'))
+                                  pen=pg.mkPen({'color':'#1A64B0','width': 1}),
+                                  brush='#1A64B0'))
 
 
         self.addItem(BarGraphItem(x=x_grey, height=y_grey, width=15,
-                                  pen=pg.mkPen({'color':'777777','width': 1}),
-                                  brush='777777'))
+                                  pen=pg.mkPen({'color':'#777777','width': 1}),
+                                  brush='#777777'))
 
 
         self.addItem(BarGraphItem(x=x_neg, height=y_neg, width=20,
-                                  pen=pg.mkPen({'color':'D13A26','width': 1}),
-                                  brush='D13A26'))
+                                  pen=pg.mkPen({'color':'#D13A26','width': 1}),
+                                  brush='#D13A26'))
 
         if self.legend_added == 0:
             self.add_legends()

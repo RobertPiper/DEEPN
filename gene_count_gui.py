@@ -1,11 +1,17 @@
+#!/usr/bin/env python3
 import os
-import re
 import sys
+
+if '.app/Contents/MacOS' in sys.executable:
+    os.chdir(os.path.join(os.path.dirname(sys.executable), '..', 'Resources'))
+
+import re
 import time
-import cStringIO, traceback
-import cPickle as pickle
-import libraries.joblib.parallel as Parallel
-from libraries.bintrees import AVLTree
+import io
+import traceback
+import pickle
+import joblib
+from functions.avltree_compat import AVLTree
 
 # Custom Functions
 import functions.fileio_gui as f
@@ -44,7 +50,7 @@ def excepthook(excType, excValue, tracebackobj):
 
     timeString = time.strftime("%Y-%m-%d, %H:%M:%S")
 
-    tbinfofile = cStringIO.StringIO()
+    tbinfofile = io.StringIO()
     traceback.print_tb(tracebackobj, None, tbinfofile)
     tbinfofile.seek(0)
     tbinfo = tbinfofile.read()
@@ -96,7 +102,7 @@ def make_read_dictionary(sam_file, chromosomes_list, bin_folder, exon_dict):
                     read_dict[chromosome].append(position)
 
                 if split[2] not in binoutfile_names.keys():
-                    handle = open(os.path.join(bin_folder, split[2] + '.bin'), 'wb')
+                    handle = open(os.path.join(bin_folder, split[2] + '.bin'), 'w')
                     binoutfile_names[split[2]] = handle
                 binoutfile_names[split[2]].write('%s:%s\n' % (split[3], split[9]))
 
@@ -155,11 +161,6 @@ def lets_count(directory, summary_folder, chromosomes_folder, input_folder, chro
     exon_dict = get_dictionary(os.path.join('dictionaries', gene_dictionary))
     infile = os.path.join(directory, input_folder, filename)
     gene_count_bin_folder = os.path.join(directory, "gene_count_indices", filename[:-4])
-    # bin_folder = ''
-    # if sys.platform == "linux" or sys.platform == "linux2" or sys.platform == 'darwin':
-    #     bin_folder = os.path.join(directory, input_folder, '.' + filename[:-4])
-    # else:
-    #     bin_folder = os.path.join(directory, input_folder, filename[:-4])
     (read_dict, total_reads) = make_read_dictionary(infile, chromosomes_list, gene_count_bin_folder, exon_dict)
     sys.stdout.write(">>> %d Total Reads (%s)\n" % (total_reads, filename))
     sys.stdout.flush()
@@ -182,18 +183,6 @@ def lets_count(directory, summary_folder, chromosomes_folder, input_folder, chro
                 except KeyError:
                     pass
 
-            # read_list = sorted(read_dict[chrom], reverse=False)
-            # exon_list = sorted(exon_dict[chrom].keys(), key=lambda x: x[0])
-            #
-            # Read first and exon next
-            # exon_index = 0
-            # for read in read_list:
-            #     for i in range(exon_index, len(exon_list)):
-            #         if exon_list[i][0] <= read <= exon_list[i][1]:
-            #             exon_dict[chrom][exon_list[i]] += 1
-            #             total_hits += 1
-            #         elif read > exon_list[i][1]:
-            #             exon_index = i
             sys.stdout.write('>>> Finished chromosome %s%s for file ( %s )\n' % (chrom[:20],
                                                                                '' if len(chrom) <= 20 else '...',
                                                                                filename))
@@ -212,9 +201,9 @@ def lets_count(directory, summary_folder, chromosomes_folder, input_folder, chro
     sys.stdout.flush()
 
 def gene_count(directory, summary_folder, chromosomes_folder, input_folder, chromosomes_list, sam_file_list):
-    num_cores = Parallel.cpu_count()
-    print ">>> Using %d Processor Cores" % (num_cores - 1)
-    Parallel.Parallel(n_jobs=num_cores-1)(Parallel.delayed(lets_count)(directory, summary_folder, chromosomes_folder,
+    num_cores = joblib.cpu_count()
+    print(">>> Using %d Processor Cores" % (num_cores - 1))
+    joblib.Parallel(n_jobs=num_cores - 1)(joblib.delayed(lets_count)(directory, summary_folder, chromosomes_folder,
                                                                        input_folder, chromosomes_list, f) for f in
                                                                       sam_file_list)
 

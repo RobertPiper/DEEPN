@@ -1,24 +1,24 @@
 import math
 import re
 import matplotlib as mpl
-from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.colors as colors
 import matplotlib.cm as cm
 import numpy as np
 from matplotlib.figure import Figure
-from PyQt4 import QtGui
+from PyQt5 import QtWidgets
 
-class GraphFrame(QtGui.QFrame):
+class GraphFrame(QtWidgets.QFrame):
     def __init__(self, filename, parent=None):
         super(GraphFrame, self).__init__(parent)
-        self.setFrameShape(QtGui.QFrame.NoFrame)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.parent = parent
         self.graph_view = GraphView(filename, self)
 
     def resizeEvent(self, event):
         self.graph_view.setGeometry(self.rect())
 
-class GraphView(QtGui.QWidget):
+class GraphView(QtWidgets.QWidget):
     def __init__(self, filename, parent=None):
         super(GraphView, self).__init__(parent)
         self.dpi = 300
@@ -29,7 +29,7 @@ class GraphView(QtGui.QWidget):
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setParent(self)
         self.canvas.mpl_connect('button_press_event', self._onpick)
-        self.layout = QtGui.QVBoxLayout()
+        self.layout = QtWidgets.QVBoxLayout()
         self.layout.addWidget(self.canvas)
         self.layout.setStretchFactor(self.canvas, 1)
         self.setLayout(self.layout)

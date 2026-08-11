@@ -1,23 +1,28 @@
+#!/usr/bin/env python3
 import os
-import re
 import sys
+
+if '.app/Contents/MacOS' in sys.executable:
+    os.chdir(os.path.join(os.path.dirname(sys.executable), '..', 'Resources'))
+
+import re
 import time
 import traceback
-import cStringIO
+import io
 from time import localtime, strftime
-import thread
+import threading
 import pyqtgraph as pg
-from PyQt4 import QtCore, QtGui, uic
+from PyQt5 import QtCore, QtGui, QtWidgets, uic
 from collections import OrderedDict
-import cPickle
-import libraries.xlsxwriter as xls
+import pickle
+import xlsxwriter as xls
 
 import functions.fileio_gui as f
 import functions.plot as plot
 import functions.structures as strt
 import subprocess
 
-app = QtGui.QApplication(sys.argv)
+app = QtWidgets.QApplication(sys.argv)
 ui_path = os.path.join('ui', 'Query_Blast.ui')
 if sys.platform == 'win32':
     ui_path = os.path.join('ui', 'Windows', 'Query_Blast.ui')
@@ -26,65 +31,31 @@ form_class, base_class = uic.loadUiType(ui_path)
 main_directory = sys.argv[1]
 list_name = sys.argv[2]
 
-# def excepthook(excType, excValue, tracebackobj):
-#     """
-#     Global function to catch unhandled exceptions.
-#
-#     @param excType exception type
-#     @param excValue exception value
-#     @param tracebackobj traceback object
-#     """
-#     separator = '-' * 80
-#     logFile = main_directory + "/blast_query_error.log"
-#     notice = \
-#         """An unhandled exception occurred. Please report the problem\n""" \
-#         """using the error reporting dialog or via email to <%s>.\n""" \
-#         """A log has been written to "%s".\n\nError information:\n""" % \
-#         ("yourmail at server.com", "")
-#
-#     timeString = time.strftime("%Y-%m-%d, %H:%M:%S")
-#
-#     tbinfofile = cStringIO.StringIO()
-#     traceback.print_tb(tracebackobj, None, tbinfofile)
-#     tbinfofile.seek(0)
-#     tbinfo = tbinfofile.read()
-#     errmsg = '%s: \n%s' % (str(excType), str(excValue))
-#     sections = [separator, timeString, separator, errmsg, separator, tbinfo]
-#     msg = '\n'.join(sections)
-#     try:
-#         f = open(logFile, "w")
-#         f.write(msg)
-#         f.close()
-#     except IOError:
-#         pass
-#
-# sys.excepthook = excepthook
-
-class QCustomTableWidgetItemInt(QtGui.QTableWidgetItem):
+class QCustomTableWidgetItemInt(QtWidgets.QTableWidgetItem):
     def __init__(self, value):
-        super(QCustomTableWidgetItemInt, self).__init__(QtCore.QString('%d' % value))
+        super(QCustomTableWidgetItemInt, self).__init__('%d' % value)
 
     def __lt__(self, other):
         if isinstance(other, QCustomTableWidgetItemInt):
-            self_data_value = int(str(self.data(QtCore.Qt.EditRole).toString()))
-            other_data_value = int(str(other.data(QtCore.Qt.EditRole).toString()))
+            self_data_value = int(str(self.data(QtCore.Qt.EditRole)))
+            other_data_value = int(str(other.data(QtCore.Qt.EditRole)))
             return self_data_value < other_data_value
         else:
-            return QtGui.QTableWidgetItem.__lt__(self, other)
+            return QtWidgets.QTableWidgetItem.__lt__(self, other)
 
-class QCustomTableWidgetItemFloat(QtGui.QTableWidgetItem):
+class QCustomTableWidgetItemFloat(QtWidgets.QTableWidgetItem):
     def __init__(self, value):
-        super(QCustomTableWidgetItemFloat, self).__init__(QtCore.QString('%.3f' % value))
+        super(QCustomTableWidgetItemFloat, self).__init__('%.3f' % value)
 
     def __lt__(self, other):
         if isinstance(other, QCustomTableWidgetItemFloat):
-            self_data_value = float(str(self.data(QtCore.Qt.EditRole).toString()))
-            other_data_value = float(str(other.data(QtCore.Qt.EditRole).toString()))
+            self_data_value = float(str(self.data(QtCore.Qt.EditRole)))
+            other_data_value = float(str(other.data(QtCore.Qt.EditRole)))
             return self_data_value < other_data_value
         else:
-            return QtGui.QTableWidgetItem.__lt__(self, other)
+            return QtWidgets.QTableWidgetItem.__lt__(self, other)
 
-class Query_Blast_Gui(QtGui.QMainWindow, form_class):
+class Query_Blast_Gui(QtWidgets.QMainWindow, form_class):
     def __init__(self, folder, directory, list_file, *args):
         super(Query_Blast_Gui, self).__init__(*args)
         self.setupUi(self)
@@ -130,20 +101,17 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
             self.clipboard = self.clipboard.rstrip().lstrip()
             if self.clipboard in self.gene_info_list.keys():
                 if str(self.search_bar.text()).rstrip().lstrip() != self.clipboard:
-                    print "Updating Results for Gene... ", self.clipboard
+                    print("Updating Results for Gene... ", self.clipboard)
                     sys.stdout.flush()
                     self.search_bar.setText(self.clipboard)
                     self.old_clipboard = self.clipboard
                     self.search_bar.editingFinished.emit()
                 else:
-                    subprocess.check_output('pbcopy </dev/null')
-            # else:
-            #     self.search_bar.setText("Copy a valid accession number or gene name to the clipboard")
+                    subprocess.check_output('pbcopy </dev/null', shell=True)
             time.sleep(0.5)
 
     def _initialize_ui_elements(self):
-        thread.start_new_thread(self.monitor_clipboard, ())
-        # self.gene_info_list, self.accession_numbers_list = self.get_indexes()
+        threading.Thread(target=self.monitor_clipboard, daemon=True).start()
         self.get_sequences()
         self.populate_gene_suggestions()
         self.blast_dataset_ddl_1.addItem('-- Select --')
@@ -159,12 +127,10 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
         self.disable_ui_elements()
 
     def populate_gene_suggestions(self):
-        # self.accession_numbers_list.removeDuplicates()
-        self.completer = QtGui.QCompleter(self.accession_number_list.keys() + self.gene_info_list.keys(), self)
-        self.completer.setCompletionMode(QtGui.QCompleter.PopupCompletion)
+        self.completer = QtWidgets.QCompleter(list(self.accession_number_list.keys()) + list(self.gene_info_list.keys()), self)
+        self.completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
         self.completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
         self.search_bar.setCompleter(self.completer)
-        # self.search_bar.setText("NM_")
         self.search_bar.editingFinished.connect(self.search_changed)
         self.accession_list.currentIndexChanged.connect(self.accession_changed)
 
@@ -200,22 +166,11 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
             if self.table_filtered:
                 self.table_filtered.clearContents()
                 self.table_filtered.setRowCount(0)
-            # for i in range(5):
-            #     self.table.setItem(0, i, QtGui.QTableWidgetItem("NULL"))
-            #     self.table_filtered.setItem(0, i, QtGui.QTableWidgetItem("NULL"))
 
-        # try:
-        #     self.selected_gene = self.gene_information[str(self.selected_gene_name)]
-        #     _sequence = self.sequence_format_html(self.selected_gene)
-        #     self.sequence_browser.setHtml(QtCore.QString(_sequence))
-        # except KeyError:
-        #     self.selected_gene = {}
-        #     pass
-        #
         if self.selected_gene_name != '' and str(self.accession_list.currentText()) != '':
             self._dataset_selected()
             _seq = self.sequence_format_html(self.sequences_info_list[str(self.accession_list.currentText())])
-            self.sequence_browser.setHtml(QtCore.QString(_seq))
+            self.sequence_browser.setHtml(_seq)
 
     def disable_ui_elements(self):
         self.sequence_browser.setEnabled(False)
@@ -240,7 +195,7 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
             self.selected_accession_number = str(self.accession_list.currentText())
             if self.selected_accession_number != '':
                 _seq = self.sequence_format_html(self.sequences_info_list[self.selected_accession_number])
-                self.sequence_browser.setHtml(QtCore.QString(_seq))
+                self.sequence_browser.setHtml(_seq)
             self._dataset_selected()
 
 
@@ -257,17 +212,6 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
         html_string += '<font color="silver">' + sequence[stop:] + '</font>'
         html_string += '</body></html>'
         return html_string
-
-    # def get_indexes(self):
-    #     gene_list = OrderedDict()
-    #     accession_list = OrderedDict()
-    #     for file_name in self.fileio.get_file_list(self.directory, input_folder, '.bqa'):
-    #         data = cPickle.load(open(os.path.join(self.directory, input_folder, file_name), 'rb'))
-    #         for k, e in data[0].items() + accession_list.items():
-    #             accession_list[k] = e
-    #         for l, g in data[1].items() + gene_list.items():
-    #             gene_list.setdefault(l, []).append(g)
-    #     return gene_list, accession_list
 
     def get_sequences(self):
         self.gene_info_list = OrderedDict()
@@ -353,7 +297,7 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
         table.sortItems(1, 1)
 
     def load_dataset(self, dataset_name):
-        self.datasets_cache[dataset_name] = cPickle.load(open(os.path.join(self.directory, self.input_folder,
+        self.datasets_cache[dataset_name] = pickle.load(open(os.path.join(self.directory, self.input_folder,
                                                                            dataset_name), 'rb'))
 
         self.enable_ui_elements()
@@ -364,7 +308,7 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
         dataset_name = self.selected_dataset_names[index]
         self._initialize_results_store()
 
-        if isinstance(self.sender(), QtGui.QComboBox):
+        if isinstance(self.sender(), QtWidgets.QComboBox):
             if self.sender().objectName() != 'accession_list':
                 index, dataset_name = self._get_sender_index_name(self.sender())
                 self.selected_dataset_names[index] = dataset_name
@@ -376,8 +320,8 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
                 self.datasets_cache[dataset_name]
             except KeyError:
                 self.disable_ui_elements()
-                print dataset_name
-                thread.start_new_thread(self.load_dataset, (dataset_name,))
+                print(dataset_name)
+                threading.Thread(target=self.load_dataset, args=(dataset_name,), daemon=True).start()
 
             count = 1
             for name in self.selected_dataset_names:
@@ -390,7 +334,6 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
                     except AttributeError:
                         pass
 
-                    # try:
                     self.table.clearContents()
                     junction_data = dataset[self.selected_gene_name][self.selected_accession_number]
                     self.table.setSortingEnabled(False)
@@ -400,8 +343,8 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
                         self.table.setItem(row, 0, QCustomTableWidgetItemInt(j.position))
                         self.table.setItem(row, 1, QCustomTableWidgetItemFloat(round(j.ppm, 3)))
                         self.table.setItem(row, 2, QCustomTableWidgetItemInt(j.query_start))
-                        self.table.setItem(row, 3, QtGui.QTableWidgetItem(j.orf.replace("_", " ").title()))
-                        self.table.setItem(row, 4, QtGui.QTableWidgetItem(j.frame.replace("_", " ").title()))
+                        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(j.orf.replace("_", " ").title()))
+                        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(j.frame.replace("_", " ").title()))
                         data = (str(j.position), str(round(j.ppm, 3)), str(j.query_start), j.orf, j.frame)
                         self.results[count - 1].append(data)
                     self.table.setSortingEnabled(True)
@@ -418,8 +361,6 @@ class Query_Blast_Gui(QtGui.QMainWindow, form_class):
                     except KeyError:
                         pass
 
-                    # except KeyError:
-                    #     pass
                     count += 1
 
     @QtCore.pyqtSlot()

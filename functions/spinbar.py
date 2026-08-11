@@ -21,7 +21,7 @@ class SpinCursor(threading.Thread):
         """ Perform a single spin """
         for x in self.spinchars:
             self.string = self.msg + "\t" + x + "\r"
-            self.out.write(self.string.encode('utf-8'))
+            self.out.write(self.string)
             self.out.flush()
             time.sleep(self.waittime)
 

@@ -1,16 +1,17 @@
 import os
 import sys
 import struct
-import cPickle
+import platform
+import pickle
 import subprocess
 from sys import platform as _platform
 from collections import Counter
 
 import threading
 import multiprocessing
+import joblib
 import functions.process as process
 import functions.structures as sts
-import libraries.joblib.parallel as Parallel
 
 def threaded(fn):
     def wrapper(*args, **kwargs):
@@ -35,10 +36,10 @@ class junctionf():
             self._spin.stop()
 
         if self.blast_pipe < 0:
-            print ">>> Terminated Process (%d). Now Exiting Gracefully!" % self.blast_pipe
+            print(">>> Terminated Process (%d). Now Exiting Gracefully!" % self.blast_pipe)
             sys.stdout.flush()
         else:
-            print ">>> All Process Terminated. Exiting Gracefully!"
+            print(">>> All Process Terminated. Exiting Gracefully!")
             sys.stdout.flush()
         sys.exit()
 
@@ -61,25 +62,22 @@ class junctionf():
 
     def junction_search(self, directory, junction_folder, input_data_folder, blast_results_folder,
                         blast_results_query, junctions_array, exclusion_sequence):
-        # junction_sequence = self._getjunction(">junctionseq")
         exclusion_sequence.upper()
         jseqs = self._make_search_junctions(junctions_array)
-        print ">>> The primary, secondary, and tertiary sequences searched are:"
+        print(">>> The primary, secondary, and tertiary sequences searched are:")
         sys.stdout.flush()
         unmapped_sam_files = self.fileio.get_sam_filelist(directory, input_data_folder)
 
-        print '>>> Starting junction search.'
+        print('>>> Starting junction search.')
         sys.stdout.flush()
 
         for f in unmapped_sam_files:
-            print '>>> File: ', f
+            print('>>> File: ', f)
             sys.stdout.flush()
             filename = os.path.join(directory, input_data_folder, f)
             input_filehandle = open(filename)
             input_file_size = os.path.getsize(filename)
             output_filehandle = open(os.path.join(directory, junction_folder, f.replace(".sam", '.junctions.txt')), 'w')
-            # self._search_for_HA(input_file, junct1, junct2, junct3, exclusion_sequence, output_file, f, input_file_size)
-            # self._search_junctions(input_file, junction_sequence, output_file)
             self._search_for_junctions(input_filehandle, jseqs, exclusion_sequence, output_filehandle, f, input_file_size)
             output_filehandle.close()
             input_filehandle.close()
@@ -88,7 +86,7 @@ class junctionf():
     def _multi_convert(self, directory, infolder, outfolder):
         file_list = self.fileio.get_file_list(directory, infolder, ".txt")
 
-        print ' '
+        print(' ')
         for f in file_list:
             self.fileio.make_FASTA(os.path.join(directory, infolder, f),
                                    os.path.join(directory, outfolder, f[:-4] + ".fa"))
@@ -103,44 +101,43 @@ class junctionf():
         elif _platform.startswith('win'):
             platform_specific_path = 'windows'
             suffix = '.exe'
-        bit_size = 'x' + str(struct.calcsize("P") * 8)
-        blast_path = os.path.join(os.curdir, 'ncbi_blast', 'bin', platform_specific_path, bit_size)
-        # self.fileio.check_path(os.curdir, blast_path, 'Cannot find relevant Blast programs in Resources folder')
+        machine = platform.machine()
+        if machine == 'arm64':
+            arch_dir = 'arm64'
+        else:
+            arch_dir = 'x' + str(struct.calcsize("P") * 8)
+        blast_path = os.path.join(os.curdir, 'ncbi_blast', 'bin', platform_specific_path, arch_dir)
         blast_db = os.path.join(os.curdir, 'ncbi_blast', 'db')
-        # database_list = self.fileio.get_file_list(blast_db, ".fa")
-        # selection = select.Selection_Dialog()
-        # selection.windowTitle('Blast Database Selection')
-        # selection.populate_list(database_list)
-        # selection.exec_()
-        # selection.activateWindow()
-        # db_selection = selection.selection
         db_path = os.path.join(blast_db, db_name)
-        print ">>> Selected Blast DB: %s" % db_name
+        print(">>> Selected Blast DB: %s" % db_name)
         sys.stdout.flush()
         file_list = self.fileio.get_file_list(directory, blast_results_folder, ".fa")
 
         for file_name in file_list:
             output_file = os.path.join(directory, blast_results_folder, file_name.replace(".junctions.fa", '.blast.txt'))
-            print ">>> Running BLAST search for file: " + file_name
+            print(">>> Running BLAST search for file: " + file_name)
             blast_command_list = [os.path.join(blast_path, 'blastn' + suffix),
                                   '-query', os.path.join(directory, 'blast_results', file_name), '-db', db_path,
-                                  '-task',  'blastn', '-dust', 'no', '-num_threads', str(Parallel.cpu_count()),
+                                  '-task',  'blastn', '-dust', 'no', '-num_threads', str(joblib.cpu_count()),
                                   '-outfmt', '7', '-out', output_file, '-evalue', '0.2', '-max_target_seqs', '10']
-            # blast_command = " ".join(blast_command_list)
 
             sys.stdout.flush()
-            # os.system(blast_command)
             self.blast_pipe = subprocess.Popen(blast_command_list, shell=False)
             self.blast_pipe.wait()
 
     def generate_tabulated_blast_results(self, directory, blast_results_folder, blast_results_query_folder, gene_list_file):
         blast_list = self.fileio.get_file_list(directory, blast_results_folder, ".txt")
 
+        # Load the gene list once for the whole batch, rather than re-reading
+        # and re-parsing the (often 100+MB) gene list file for every .blast.txt
+        # file - it's the same list for every file in this batch.
+        gene_list = self._get_accession_number_list(gene_list_file)
+
         for blasttxt in blast_list:
-            print ">>> Parsing BLAST results file %s ..." % blasttxt
+            print(">>> Parsing BLAST results file %s ..." % blasttxt)
             blast_dict, gene_dict = self._blast_parser(directory, blast_results_folder,
-                                                       blasttxt, gene_list_file)
-            for gene in blast_dict.keys():
+                                                       blasttxt, gene_list)
+            for gene in list(blast_dict.keys()):
                 if gene not in ['total', 'pos_que']:
                     stats = {'in_orf'  : 0, 'in_frame': 0, 'downstream': 0,
                              'upstream': 0, 'not_in_frame': 0,
@@ -158,7 +155,7 @@ class junctionf():
 
             blast_query_p = open(os.path.join(directory, blast_results_query_folder,
                                               blasttxt.replace(".blast.txt", ".bqp")), "wb")
-            cPickle.dump(blast_dict, blast_query_p)
+            pickle.dump(blast_dict, blast_query_p)
             blast_query_p.close()
         self.fileio.remove_file(directory, blast_results_folder,
                                 self.fileio.get_file_list(directory, blast_results_folder, ".fa"))
@@ -207,9 +204,6 @@ class junctionf():
     def _make_search_junctions(self, junctions_array):
         jseqs = []
         for junc in junctions_array:
-            # jseqs.append(junc[35:50]) These are 15 bp junctions
-            # jseqs.append(junc[31:46])
-            # jseqs.append(junc[27:42])
             jseqs.append(junc[30:50])
             jseqs.append(junc[26:46])
             jseqs.append(junc[22:42])
@@ -229,13 +223,17 @@ class junctionf():
                                    }
         return gene_list
 
-    def _blast_parser(self, directory, infolder, fileName, gene_list_file):
+    def _blast_parser(self, directory, infolder, fileName, gene_list):
         blast_results_handle = open(os.path.join(directory, infolder, fileName), 'r')
-        gene_list = self._get_accession_number_list(gene_list_file)
         blast_results_count = 0
         print_counter = 0
         previous_bitscore = 0
-        results_dictionary = {}
+        # Junctions are collected in a dict keyed by (position, query_start)
+        # during parsing so a repeat hit is an O(1) lookup instead of an O(n)
+        # scan of everything found so far for that gene/transcript. Converted
+        # back to a plain list (in the same insertion order) before returning,
+        # so the returned/pickled structure is unchanged.
+        junction_lookup = {}
         gene_dict = {}
         collect_results = 'n'
         for line in blast_results_handle.readlines():
@@ -245,10 +243,10 @@ class junctionf():
                 blast_results_count += 1
                 print_counter += 1
                 previous_bitscore = 0
-                if print_counter == 90000: #this if loop is purely for output purposes
+                if print_counter == 90000:
                     sys.stdout.write('.')
                     print_counter = 0
-            elif "hits" in line and int(split[1]) < 100:  # limits number of blast hits for single read to less than 100
+            elif "hits" in line and int(split[1]) < 100:
                 collect_results = 'y'
             elif split[0] != '#' and collect_results == 'y' and float(split[2]) > 98 and \
                             float(split[11]) > 50.0 and float(split[11]) > previous_bitscore:
@@ -286,165 +284,25 @@ class junctionf():
                 if j.frame == 'in_frame' and j.orf == 'in_orf':
                         j.frame_orf = True
 
-                if gene_name not in results_dictionary.keys():
-                    results_dictionary[gene_name] = {}
-                    results_dictionary[gene_name][nm_number] = [j]
-                else:
-                    if nm_number not in results_dictionary[gene_name].keys():
-                        results_dictionary[gene_name][nm_number] = []
+                if gene_name not in junction_lookup:
+                    junction_lookup[gene_name] = {}
+                if nm_number not in junction_lookup[gene_name]:
+                    junction_lookup[gene_name][nm_number] = {}
 
-                    junction_present = False
-                    junction_index = 0
-                    for index, pj in enumerate(results_dictionary[gene_name][nm_number]):
-                        if pj.position == j.position and pj.query_start == j.query_start:
-                            junction_index = index
-                            junction_present = True
-                    if junction_present:
-                        results_dictionary[gene_name][nm_number][junction_index].count += 1
-                    else:
-                        results_dictionary[gene_name][nm_number].append(j)
+                key = (j.position, j.query_start)
+                existing = junction_lookup[gene_name][nm_number].get(key)
+                if existing is not None:
+                    existing.count += 1
+                else:
+                    junction_lookup[gene_name][nm_number][key] = j
             else:
                 collect_results = 'n'
-        results_dictionary['total'] = blast_results_count
         blast_results_handle.close()
+
+        results_dictionary = {}
+        for gene_name, transcripts in junction_lookup.items():
+            results_dictionary[gene_name] = {}
+            for nm_number, hits_by_key in transcripts.items():
+                results_dictionary[gene_name][nm_number] = list(hits_by_key.values())
+        results_dictionary['total'] = blast_results_count
         return results_dictionary, gene_dict
-
-    # def _search_junctions(self, infile, junction_sequence, outfile):
-    #     def longest_common_substring(s1, s2):
-    #         m = [[0] * (1 + len(s2)) for i in xrange(1 + len(s1))]
-    #         longest, x_longest = 0, 0
-    #         for x in xrange(1, 1 + len(s1)):
-    #             for y in xrange(1, 1 + len(s2)):
-    #                 if s1[x - 1] == s2[y - 1]:
-    #                     m[x][y] = m[x - 1][y - 1] + 1
-    #                     if m[x][y] > longest:
-    #                         longest = m[x][y]
-    #                         x_longest = x
-    #                 else:
-    #                     m[x][y] = 0
-    #         return s1[x_longest - longest: x_longest]
-    #     reads = 0
-    #     iterations = 0
-    #     reverse_junction_sequence = self.process.reverse_complement(junction_sequence)
-    #     for line in infile.readlines():
-    #         split = line.split()
-    #         if split[0][0] != '@' and split[2] == '*':
-    #             read = split[9]
-    #             reads += 1
-    #             iterations += 1
-    #             if iterations == 5000:
-    #                 iterations = 0
-    #                 sys.stdout.write('.', )
-    #                 sys.stdout.flush()
-    #             substring = longest_common_substring(junction_sequence, read)
-    #             rev_substring = longest_common_substring(reverse_junction_sequence, read)
-    #             jloc = junction_sequence.find(substring) + len(substring)
-    #             jloc_rev = reverse_junction_sequence.find(rev_substring) + len(rev_substring)
-    #             rloc = read.find(substring) + len(substring) + len(junction_sequence) - jloc
-    #             rloc_rev = read.find(reverse_junction_sequence) + len(rev_substring) + \
-    #                        len(reverse_junction_sequence) - jloc_rev
-    #
-    #             if jloc >= len(junction_sequence) - 1 and len(read) - rloc > 25 and len(substring) > 15:
-    #                 outfile.write(str(split[0]) + " "
-    #                               + str(split[1]) + " "
-    #                               + str(split[2]) + " "
-    #                               + str(split[3]) + " "
-    #                               + str(split[9]) + " "
-    #                               + read[rloc:] + " "
-    #                               + self.process.translate_orf(read[rloc:]) + "\n")
-    #                 continue
-    #
-    #             if jloc_rev >= len(reverse_junction_sequence) - 1 and len(read) - rloc_rev > 25 and len(rev_substring) > 15:
-    #                 outfile.write(str(split[0]) + " "
-    #                               + str(split[1]) + " "
-    #                               + str(split[2]) + " "
-    #                               + str(split[3]) + " "
-    #                               + str(split[9]) + " "
-    #                               + read[rloc_rev:] + " "
-    #                               + self.process.translate_orf(read[rloc_rev:]) + "\n")
-
-
-    # def _search_for_HA(self, infile, primaryJunct, secondaryJunct, tertiaryJunct, exclusion_sequence, OutFile, f,
-    #                    input_file_size):
-    #     HA = primaryJunct
-    #     HArev = self.process.reverse_complement(HA)
-    #     HA2 = secondaryJunct
-    #     HA2rev = self.process.reverse_complement(HA2)
-    #     HA3 = tertiaryJunct
-    #     HA3rev = self.process.reverse_complement(HA2)
-    #     Hits2 = 0
-    #     Hits = 0
-    #     reads = 0
-    #     iterations = 0
-    #     toggle = 0
-    #     self.printio.print_progress(f, 0, 0, 0, 1)
-    #     for line in infile:
-    #         line.strip()
-    #         splitLine = line.split()
-    #         if splitLine[0][0] != '@' and splitLine[2] == '*':
-    #             reads += 1
-    #             iterations += 1
-    #             if iterations == 5000:
-    #                 iterations = 0
-    #                 sys.stdout.write('\rRead %.3f%% of file...' % (infile.tell() * 100.0 / input_file_size))
-    #                 sys.stdout.flush()
-    #
-    #             if HA in splitLine[9] or HArev in splitLine[9] or HA2 in splitLine[9] or \
-    #                             HA2rev in splitLine[9] or HA3 in splitLine[9] or HA3rev in splitLine[9]:
-    #                 Hits += 1
-    #                 if HA in splitLine[9]:
-    #                     HAindex = splitLine[9].index(HA)
-    #                     DSRF = splitLine[9][(HAindex + len(HA)):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 elif HArev in splitLine[9]:
-    #                     HARevCom = self.process.reverse_complement(splitLine[9])
-    #                     HAindex = HARevCom.index(HA)
-    #                     DSRF = HARevCom[(HAindex + len(HA)):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 elif HA2 in splitLine[9]:
-    #                     HA2index = splitLine[9].index(HA2)
-    #                     DSRF = splitLine[9][(HA2index + len(HA2) + 4):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 elif HA2rev in splitLine[9]:
-    #                     HARevCom = self.process.reverse_complement(splitLine[9])
-    #                     HA2index = HARevCom.index(HA2)
-    #                     DSRF = HARevCom[(HA2index + len(HA2) + 4):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 elif HA3 in splitLine[9]:
-    #                     HA3index = splitLine[9].index(HA3)
-    #                     DSRF = splitLine[9][(HA3index + len(HA3) + 8):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 elif HA3rev in splitLine[9]:
-    #                     HARevCom = self.process.reverse_complement(splitLine[9])
-    #                     HA3index = HARevCom.index(HA3)
-    #                     DSRF = splitLine[9][(HA3index + len(HA3) + 8):]
-    #                     if len(DSRF) > 25:
-    #                         if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                             Protein = self.process.translate_orf(DSRF)
-    #                             Hits2 += 1
-    #                             toggle = 1
-    #                 if toggle == 1:
-    #                     if exclusion_sequence not in DSRF or exclusion_sequence == '':
-    #                         OutFile.write(str(splitLine[0]) + " " + str(splitLine[1]) + " " + str(splitLine[2]) + " " + str(
-    #                                 splitLine[3]) + " " + str(splitLine[9]) + " " + DSRF + " " + Protein + "\n")
-    #                         toggle = 0

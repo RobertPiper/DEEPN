@@ -1,11 +1,9 @@
 import os
-import sys
-from PyQt4 import QtCore, QtGui, uic
+from PyQt5 import QtWidgets, uic
 
-app = QtGui.QApplication(sys.argv)
 form_class, base_class = uic.loadUiType(os.path.join(os.path.curdir, 'ui', 'Progress_Dialog.ui'))
 
-class Progress_Dialog(QtGui.QDialog, form_class):
+class Progress_Dialog(QtWidgets.QDialog, form_class):
     def __init__(self, *args):
         super(Progress_Dialog, self).__init__(*args)
         self.setupUi(self)

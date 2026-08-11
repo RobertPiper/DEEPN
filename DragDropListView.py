@@ -1,12 +1,14 @@
+from PyQt5 import QtCore, QtGui, QtWidgets
 
-from PyQt4 import QtCore, QtGui
 
+class DragDropListView(QtWidgets.QListWidget):
+    dropped = QtCore.pyqtSignal(str)
+    deleted = QtCore.pyqtSignal(str)
 
-class DragDropListView(QtGui.QListWidget):
     def __init__(self, type, parent=None):
         super(DragDropListView, self).__init__(parent)
-        self.setDragDropMode(QtGui.QAbstractItemView.DragDrop)
-        self.setSelectionMode(QtGui.QAbstractItemView.ExtendedSelection)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDrop)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setIconSize(QtCore.QSize(72, 72))
@@ -18,7 +20,7 @@ class DragDropListView(QtGui.QListWidget):
         mimeData.setText(str(t))
 
         drag.setMimeData(mimeData)
-        if drag.start(QtCore.Qt.MoveAction) == QtCore.Qt.MoveAction:
+        if drag.exec_(QtCore.Qt.MoveAction) == QtCore.Qt.MoveAction:
             for item in self.selectedItems():
                 self.takeItem(self.row(item))
 
@@ -39,7 +41,7 @@ class DragDropListView(QtGui.QListWidget):
             event.setDropAction(QtCore.Qt.CopyAction)
             event.accept()
             text = event.mimeData().text()
-            self.emit(QtCore.SIGNAL("dropped"), text)
+            self.dropped.emit(text)
         else:
             event.ignore()
 
@@ -49,5 +51,5 @@ class DragDropListView(QtGui.QListWidget):
 
     def _del_item(self):
         for item in self.selectedItems():
-            self.emit(QtCore.SIGNAL("deleted"), item.GetData())
+            self.deleted.emit(item.GetData())
             self.takeItem(self.row(item))

@@ -73,9 +73,9 @@ class DatabaseObject(object):
         conds = ' and '.join(['%s=?' % k for k in kwargs])
         subs = [kwargs[k] for k in kwargs]
         query = queries['DELETE'] % (table_name, conds)
-        print "Deleting from list \'%s\' where it matches \'%s\' from table \'%s\'" % (",".join(k for k in kwargs),
-                                                                                       ",".join(kwargs[k] for k in kwargs),
-                                                                                       table_name)
+        print("Deleting from list '%s' where it matches '%s' from table '%s'" % (",".join(k for k in kwargs),
+                                                                                  ",".join(kwargs[k] for k in kwargs),
+                                                                                  table_name))
         return self.write(query, subs)
 
     def delete_all(self, table_name):

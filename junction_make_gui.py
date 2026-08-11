@@ -1,8 +1,13 @@
+#!/usr/bin/env python3
 import os
 import sys
+
+if '.app/Contents/MacOS' in sys.executable:
+    os.chdir(os.path.join(os.path.dirname(sys.executable), '..', 'Resources'))
+
 import signal
 import time
-import cStringIO
+import io
 import traceback
 import functions.fileio_gui as f
 import functions.junctionf_gui as j
@@ -54,7 +59,7 @@ def excepthook(excType, excValue, tracebackobj):
 
     timeString = time.strftime("%Y-%m-%d, %H:%M:%S")
 
-    tbinfofile = cStringIO.StringIO()
+    tbinfofile = io.StringIO()
     traceback.print_tb(tracebackobj, None, tbinfofile)
     tbinfofile.seek(0)
     tbinfo = tbinfofile.read()

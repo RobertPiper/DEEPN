@@ -1,27 +1,27 @@
 import os
 import sys
 import glob
-import cPickle
+import pickle
 import functions.structures as sts
 
 directory = 'blast_results_query'
 if not os.path.exists(directory):
-    print (">>> No blast results found. Exiting.")
+    print(">>> No blast results found. Exiting.")
     sys.exit()
 
 filelist = glob.glob(directory + "/*.bqp")
-print "\nBQP files"
-print "----------\n"
+print("\nBQP files")
+print("----------\n")
 for count, file in enumerate(filelist):
-    print "%5s. %-50s" % (count, os.path.basename(file))
-print "\n"
+    print("%5s. %-50s" % (count, os.path.basename(file)))
+print("\n")
 
-sel = raw_input(">>> Select a file: ")
+sel = input(">>> Select a file: ")
 filename = filelist[int(sel)]
 output_filename = os.path.join(directory, os.path.splitext(os.path.basename(filename))[0] + "_library_quality.csv")
 output_handle = open(output_filename, 'w')
 output_handle.write("Gene_Name,NM_Number,In_Frame,Out_of_Frame,Downstream,In_ORF,Upstream,Backwards,In_ORF_Frame,Upstream_Inframe\n,,\n")
-bqp = cPickle.load(open(filename, 'rb'))
+bqp = pickle.load(open(filename, 'rb'))
 for gene_name in bqp:
     if gene_name != 'total':
         output_handle.write("%s," % gene_name)
@@ -53,11 +53,6 @@ for gene_name in bqp:
                             stats['orf_frame'] += 1
                         if j.frame =='in_frame' and j.orf == 'upstream':
                             stats['up_frame'] += 1
-                        # if first_line_junction:
-                        #     output_handle.write("%d, %d, %s, %s\n" % (j.position, j.query_start, j.frame, j.orf))
-                        #     first_line_junction = False
-                        # else:
-                        #     output_handle.write(",,%d, %d, %s, %s\n" % (j.position, j.query_start, j.frame, j.orf))
                     else:
                         pass
                 if first_line_junction:

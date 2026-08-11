@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>StatMaker</class>
+ <widget class="QMainWindow" name="StatMaker">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1100</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>1100</width>
+    <height>760</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Stat Maker v2 - Collation</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="mainLayout">
+    <item>
+     <layout class="QVBoxLayout" name="leftLayout">
+      <property name="sizeConstraint">
+       <enum>QLayout::SetDefaultConstraint</enum>
+      </property>
+      <item>
+       <widget class="QLabel" name="label_files">
+        <property name="font">
+         <font>
+          <pointsize>14</pointsize>
+          <weight>75</weight>
+          <bold>true</bold>
+         </font>
+        </property>
+        <property name="text">
+         <string>Gene Count Summary Files</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="DragDropListView" name="file_list">
+        <property name="minimumSize">
+         <size>
+          <width>280</width>
+          <height>400</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="folder_choice_btn">
+        <property name="text">
+         <string>Select Work Folder</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="verify_r_btn">
+        <property name="text">
+         <string>Verify R Installation</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="method_info_btn">
+        <property name="text">
+         <string>Method Info</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTextEdit" name="log_text">
+        <property name="minimumSize">
+         <size>
+          <width>280</width>
+          <height>140</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <family>Menlo</family>
+          <pointsize>11</pointsize>
+         </font>
+        </property>
+        <property name="readOnly">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="quit_btn">
+        <property name="text">
+         <string>Quit</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QVBoxLayout" name="rightLayout">
+      <item>
+       <layout class="QHBoxLayout" name="vecRow1">
+        <item>
+         <layout class="QVBoxLayout" name="vecCol2">
+          <item>
+           <widget class="QLabel" name="label_vecnonsel1">
+            <property name="font">
+             <font>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Vector Non-Selected (rep 1)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="vec_nonsel_list">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="vecCol1">
+          <item>
+           <widget class="QLabel" name="label_vecsel1">
+            <property name="font">
+             <font>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Vector Selected (rep 1)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="vec_sel_list">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="vecRow2">
+        <item>
+         <layout class="QVBoxLayout" name="vecCol4">
+          <item>
+           <widget class="QLabel" name="label_vecnonsel2">
+            <property name="font">
+             <font>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Vector Non-Selected (rep 2)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="vec_nonsel_list_2">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="vecCol3">
+          <item>
+           <widget class="QLabel" name="label_vecsel2">
+            <property name="font">
+             <font>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Vector Selected (rep 2)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="vec_sel_list_2">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="Line" name="line_1">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="baitRow">
+        <item>
+         <layout class="QVBoxLayout" name="baitCol2">
+          <item>
+           <widget class="QLabel" name="label_baitnonsel">
+            <property name="font">
+             <font>
+              <pointsize>13</pointsize>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Bait Non-Selected</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="bait_nonsel_list">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="baitCol1">
+          <item>
+           <widget class="QLabel" name="label_baitsel">
+            <property name="font">
+             <font>
+              <pointsize>13</pointsize>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Bait Selected</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="DragDropListView" name="bait_sel_list">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>60</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="Line" name="line_2">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="collate_btn">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>14</pointsize>
+          <weight>75</weight>
+          <bold>true</bold>
+         </font>
+        </property>
+        <property name="text">
+         <string>Collate Junction Data</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="verticalSpacer">
+        <property name="orientation">
+         <enum>Qt::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>40</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>DragDropListView</class>
+   <extends>QListWidget</extends>
+   <header>DragDropListView</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
