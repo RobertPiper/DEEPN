@@ -60,11 +60,16 @@ class junctionf():
                     break
         return list
 
+    _DIRECTION_LABELS = {'5p_': "5'", '3p_': "3'"}
+
     def junction_search(self, directory, junction_folder, input_data_folder, blast_results_folder,
-                        blast_results_query, junctions_array, exclusion_sequence):
+                        blast_results_query, junctions_array, exclusion_sequence, prefix):
         exclusion_sequence.upper()
         jseqs = self._make_search_junctions(junctions_array)
-        print(">>> The primary, secondary, and tertiary sequences searched are:")
+        direction_label = self._DIRECTION_LABELS.get(prefix, prefix)
+        print(">>> Searching for %s junctions. Primary, secondary, and tertiary sequences searched:" % direction_label)
+        for seq in jseqs:
+            print("      %s" % seq)
         sys.stdout.flush()
         unmapped_sam_files = self.fileio.get_sam_filelist(directory, input_data_folder)
 
@@ -72,26 +77,26 @@ class junctionf():
         sys.stdout.flush()
 
         for f in unmapped_sam_files:
-            print('>>> File: ', f)
+            print('>>> [%s junctions] File: %s' % (direction_label, f))
             sys.stdout.flush()
             filename = os.path.join(directory, input_data_folder, f)
             input_filehandle = open(filename)
             input_file_size = os.path.getsize(filename)
-            output_filehandle = open(os.path.join(directory, junction_folder, f.replace(".sam", '.junctions.txt')), 'w')
+            output_filehandle = open(os.path.join(directory, junction_folder, prefix + f.replace(".sam", '.junctions.txt')), 'w')
             self._search_for_junctions(input_filehandle, jseqs, exclusion_sequence, output_filehandle, f, input_file_size)
             output_filehandle.close()
             input_filehandle.close()
-        self._multi_convert(directory, junction_folder, blast_results_folder)
+        self._multi_convert(directory, junction_folder, blast_results_folder, prefix)
 
-    def _multi_convert(self, directory, infolder, outfolder):
-        file_list = self.fileio.get_file_list(directory, infolder, ".txt")
+    def _multi_convert(self, directory, infolder, outfolder, prefix):
+        file_list = [f for f in self.fileio.get_file_list(directory, infolder, ".txt") if f.startswith(prefix)]
 
         print(' ')
         for f in file_list:
             self.fileio.make_FASTA(os.path.join(directory, infolder, f),
                                    os.path.join(directory, outfolder, f[:-4] + ".fa"))
 
-    def blast_search(self, directory, db_name, blast_results_folder, blast_results_query):
+    def blast_search(self, directory, db_name, blast_results_folder, blast_results_query, prefix):
         platform_specific_path = 'osx'
         suffix = ''
         if _platform == "linux" or _platform == "linux2":
@@ -111,7 +116,7 @@ class junctionf():
         db_path = os.path.join(blast_db, db_name)
         print(">>> Selected Blast DB: %s" % db_name)
         sys.stdout.flush()
-        file_list = self.fileio.get_file_list(directory, blast_results_folder, ".fa")
+        file_list = [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".fa") if f.startswith(prefix)]
 
         for file_name in file_list:
             output_file = os.path.join(directory, blast_results_folder, file_name.replace(".junctions.fa", '.blast.txt'))
@@ -125,8 +130,8 @@ class junctionf():
             self.blast_pipe = subprocess.Popen(blast_command_list, shell=False)
             self.blast_pipe.wait()
 
-    def generate_tabulated_blast_results(self, directory, blast_results_folder, blast_results_query_folder, gene_list_file):
-        blast_list = self.fileio.get_file_list(directory, blast_results_folder, ".txt")
+    def generate_tabulated_blast_results(self, directory, blast_results_folder, blast_results_query_folder, gene_list_file, prefix):
+        blast_list = [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".txt") if f.startswith(prefix)]
 
         # Load the gene list once for the whole batch, rather than re-reading
         # and re-parsing the (often 100+MB) gene list file for every .blast.txt
@@ -158,7 +163,7 @@ class junctionf():
             pickle.dump(blast_dict, blast_query_p)
             blast_query_p.close()
         self.fileio.remove_file(directory, blast_results_folder,
-                                self.fileio.get_file_list(directory, blast_results_folder, ".fa"))
+                                [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".fa") if f.startswith(prefix)])
 
     def _junctions_in_read(self, read, jseqs):
         match_index = -1

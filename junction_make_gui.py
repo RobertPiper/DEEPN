@@ -26,6 +26,11 @@ blast_db_name = sys.argv[4]
 gene_list_file = sys.argv[5]
 combined = int(sys.argv[6])
 
+junction_sequence_3p_raw = sys.argv[7].replace(" ", "") if len(sys.argv) > 7 else ''
+junction_sequence_3p = junction_sequence_3p_raw.split(",") if junction_sequence_3p_raw else []
+blast_5p = int(sys.argv[8]) if len(sys.argv) > 8 else 1
+blast_3p = int(sys.argv[9]) if len(sys.argv) > 9 else 0
+
 if combined == 1:
     input_data_folder = 'sam_files'
 
@@ -87,11 +92,25 @@ if __name__ == '__main__':
     # fileio.input_data_check(main_directory, input_data_folder, '.sam',
     #                         [junction_folder, blast_results_folder, blast_results_query])
     initialize_folders(main_directory)
-    junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
-                             blast_results_query, junction_sequence, exclusion_sequence)
-    # printio.print_comment("Comment3")
-    junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query)
-    junctionf.generate_tabulated_blast_results(main_directory,
-                                               blast_results_folder,
-                                               blast_results_query,
-                                               gene_list_file)
+
+    if blast_5p:
+        sys.stdout.write("\n>>> Running 5' junction search...\n")
+        sys.stdout.flush()
+        junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
+                                 blast_results_query, junction_sequence, exclusion_sequence, '5p_')
+        junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '5p_')
+        junctionf.generate_tabulated_blast_results(main_directory,
+                                                   blast_results_folder,
+                                                   blast_results_query,
+                                                   gene_list_file, '5p_')
+
+    if blast_3p and junction_sequence_3p:
+        sys.stdout.write("\n>>> Running 3' junction search...\n")
+        sys.stdout.flush()
+        junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
+                                 blast_results_query, junction_sequence_3p, exclusion_sequence, '3p_')
+        junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '3p_')
+        junctionf.generate_tabulated_blast_results(main_directory,
+                                                   blast_results_folder,
+                                                   blast_results_query,
+                                                   gene_list_file, '3p_')

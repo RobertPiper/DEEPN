@@ -71,8 +71,36 @@ HOW TO USE THIS
                                     coverage
 
   4. Junction Make reads the unmapped .sam files and searches each
-     read for the junction/bait sequence (pre-filled when you pick
+     read for the junction/bait sequence(s) (pre-filled when you pick
      the library in step 1 - editable if needed).
+
+     5' AND 3' JUNCTION SEQUENCE FIELDS: a library can have a 5'
+     junction sequence, a 3' junction sequence, or both. Most libraries
+     only have a 5' sequence on file (the 3' field is left blank); the
+     two current TAB libraries (hORFeome_TAB/hg38 and SacCer3_TAB) have
+     both. You can also paste in a 3' sequence by hand for a library
+     that doesn't have one on file.
+
+     BLAST 5'/3' JUNCTIONS CHECKBOXES: these control which of the two
+     searches Junction Make actually runs, and are checked by default
+     whenever their matching field has a sequence (a library with no 3'
+     sequence on file has "Blast 3' Junctions" auto-unchecked, since
+     there's nothing to search for - check the box yourself if you
+     paste one in). You can run just the 5' search now and come back
+     to run the 3' search on the same folder later (or vice versa) -
+     each search only touches the files it created; re-running one
+     direction never overwrites or deletes the other's output.
+
+     Both searches use the exact same method - three overlapping
+     20nt windows, BLAST filtering, .bqp generation, all described
+     below - just against a different tag sequence. They run as two
+     independent passes over the unmapped .sam files (once for 5', once
+     for 3', if both are checked), and every file each pass produces is
+     named with a "5p_" or "3p_" prefix so both directions' output can
+     live side by side in the same folders without colliding. Blast
+     Query, Read Depth, and Stat Maker don't need to know which
+     directions you ran - they just work with whatever "5p_"/"3p_"
+     files happen to exist.
 
      JUNCTION SEARCH TOLERANCE: rather than searching for one fixed
      20nt window right at the junction boundary, three overlapping
@@ -97,10 +125,10 @@ HOW TO USE THIS
      weak/spurious hits are dropped).
 
      The surviving hits are parsed and written to
-     blast_results_query/*.bqp - one file per .sam file, a pickled
-     per-gene, per-transcript map of every junction found (its
-     position, frame, and whether it falls upstream/inside/downstream
-     of the ORF).
+     blast_results_query/5p_*.bqp and/or 3p_*.bqp - one file per
+     .sam file per direction searched, a pickled per-gene,
+     per-transcript map of every junction found (its position, frame,
+     and whether it falls upstream/inside/downstream of the ORF).
 
   5. Blast Query lets you search a .bqp file by gene name (or NM_
      accession) and see/plot exactly where the junctions for that
@@ -176,6 +204,39 @@ WHAT'S NEW IN v3
          no change to which junctions get counted or how they're
          counted (still by exact position + query start, still a
          simple +1 to an existing count on a repeat).
+
+WHAT'S NEW IN v4
+
+  - 3' junction support. Added a "3' Junction Sequence" field
+    alongside the existing field (now labeled "5' Junction
+    Sequence"), and "Blast 5' Junctions" / "Blast 3' Junctions"
+    checkboxes to control which of the two Junction Make actually
+    runs. See the Junction Make section above for the full behavior -
+    both directions use the identical search/BLAST/.bqp method, run
+    as independent passes, and can be run together or separately at
+    different times without disturbing each other's output.
+
+  - Junction Make status messages now say which direction (5' or 3')
+    and which file is currently being searched, and print the actual
+    tag windows being matched against, instead of a generic message.
+
+WHAT'S COMING - FRAGFINDER
+
+  FragFinder is a planned new module for focusing on a single Y2H
+  dataset at once. The idea: line up a chosen gene's Read Depth
+  coverage, its 5' junction hits, and its 3' junction hits as three
+  linked plots sharing one position axis, alongside a table of every
+  junction found for that gene/dataset. Clicking a junction in the
+  table marks its position across all three plots.
+
+  It also adds "Extrapolate Junction" - for a junction you're
+  interested in, it re-scans the raw blast.txt/junctions.txt files
+  for that dataset to find the longest representative read
+  supporting that specific junction, and displays it FASTA-style
+  (read identifier, gene, 5'/3', forward/backward, sequence). This
+  is a slower, on-demand re-analysis step separate from the fast
+  plots, since it isn't something Junction Make's normal .bqp output
+  captures on its own.
 """
 
 class vQlistWidgetItem(QtWidgets.QListWidgetItem):
@@ -342,8 +403,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.junction_sequence_txt.setEnabled(True)
             self.exclude_sequence_txt.setEnabled(True)
             self.gene_count_btn.setEnabled(True)
-            self.junction_make_btn.setEnabled(True)
-            self.gene_count_junction_make_btn.setEnabled(True)
+            junction_ok = self.junction_prereqs_met()
+            self.junction_make_btn.setEnabled(junction_ok)
+            self.gene_count_junction_make_btn.setEnabled(junction_ok)
             self.db_list_wgt.setEnabled(True)
             self.status_txt.setText(self.directory)
 
@@ -397,7 +459,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.db_selection = self.db_list_wgt.item(self.db_list_wgt.currentRow())
         for row in self.g_db.select('*', id=str(self.db_selection.data)):
             self.junction_sequence_txt.setText(row[7])
-            self.junction_sequence_3p_txt.setText(row[9] if len(row) > 9 and row[9] else '')
+            junction_3p = row[9] if len(row) > 9 and row[9] else ''
+            self.junction_sequence_3p_txt.setText(junction_3p)
+            self.blast_3p_box.setChecked(bool(junction_3p))
             self.gene_dictionary = str(row[4])
             self.chromosome_list = str(row[8])
             self.blast_db_name = str(row[6])
@@ -407,6 +471,17 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
     def enable_select_folder(self):
         for btn in self.buttons1:
             btn.setEnabled(True)
+
+    def junction_prereqs_met(self):
+        blast_5p = self.blast_5p_box.isChecked()
+        blast_3p = self.blast_3p_box.isChecked()
+        if not blast_5p and not blast_3p:
+            return False
+        if blast_5p and not str(self.junction_sequence_txt.text()).strip():
+            return False
+        if blast_3p and not str(self.junction_sequence_3p_txt.text()).strip():
+            return False
+        return True
 
     def stdout_ready(self):
         text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace').strip()
@@ -499,7 +574,10 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             if self.quit == False:
                 self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
                 arguments = [self.directory, str(self.junction_sequence_txt.text()),
-                             str(self.exclude_sequence_txt.text()), self.blast_db_name, self.gene_list_file, str(self.combined)]
+                             str(self.exclude_sequence_txt.text()), self.blast_db_name, self.gene_list_file, str(self.combined),
+                             str(self.junction_sequence_3p_txt.text()),
+                             str(int(self.blast_5p_box.isChecked())),
+                             str(int(self.blast_3p_box.isChecked()))]
                 self.process.start(script_path('junction_make_gui.py'), arguments)
             else:
                 self.process_finished()
@@ -525,7 +603,10 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
                             script_path('gene_count_gui.py'),
                             script_path('junction_make_gui.py'),
                             self.gene_list_file,
-                            str(self.combined)]
+                            str(self.combined),
+                            str(self.junction_sequence_3p_txt.text()),
+                            str(int(self.blast_5p_box.isChecked())),
+                            str(int(self.blast_3p_box.isChecked()))]
 
                 self.process.start(script_path('gc_jm.py'), arguments)
             else:
