@@ -190,7 +190,10 @@ class junctionf():
             return value
 
         reads_count = 0
-        for line in input_filehandle:
+        while True:
+            line = input_filehandle.readline()
+            if not line:
+                break
             line_split = line.strip().split()
             if line_split[0][0] != "@" and line_split[2] == "*":
                 reads_count += 1

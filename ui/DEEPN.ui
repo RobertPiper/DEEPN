@@ -503,6 +503,21 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="fragfinder_btn">
+         <property name="font">
+          <font>
+           <pointsize>14</pointsize>
+           <weight>50</weight>
+           <bold>false</bold>
+           <strikeout>false</strikeout>
+          </font>
+         </property>
+         <property name="text">
+          <string>FragFinder</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
      <item>
@@ -587,6 +602,7 @@
   <tabstop>gene_count_junction_make_btn</tabstop>
   <tabstop>query_blast_btn</tabstop>
   <tabstop>read_depth_btn</tabstop>
+  <tabstop>fragfinder_btn</tabstop>
  </tabstops>
  <resources/>
  <connections/>

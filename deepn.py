@@ -146,6 +146,58 @@ HOW TO USE THIS
      gene_count_summary and .bqp files from steps 3-4, and produces
      one combined results table.
 
+  8. FragFinder (Analyze Data section) focuses on one gene within one
+     dataset at a time, lining up Read Depth, 5' junctions, and 3'
+     junctions together instead of checking each tool separately.
+     Enabled once the work folder has at least one 5p_*.bqp file.
+
+     GETTING STARTED: search for a gene (same gene name/accession
+     search as Blast Query and Read Depth) and pick a transcript.
+     Then, for any of the three panels (Read Depth, 5' Junctions, 3'
+     Junctions), click that panel's "Load..." button and pick a file
+     - a .sam file for Read Depth, a 5p_*.bqp or 3p_*.bqp file for
+     the junction panels. Picking a file for one panel automatically
+     tries to fill in the other two by matching the base filename
+     (swapping in the right prefix/suffix); if it can't find a
+     match, it opens a file picker for you to locate it, and
+     clicking Cancel there just leaves that panel empty - only a 5'
+     junction file is actually required, Read Depth and 3' junctions
+     can be skipped for datasets that don't have them.
+
+     Each panel's header shows which file is currently loaded (": "
+     followed by the filename). The Read Depth panel has its own
+     "Interval" spinbox (same as the standalone Read Depth tool) to
+     adjust the window size used for the coverage calculation.
+
+     All three plots share one position axis. The table on the
+     right lists every 5' and 3' junction found for the current
+     gene - click a row to mark that position with a dashed line on
+     all three plots and enable "Extrapolate Junction".
+
+     EXTRAPOLATE JUNCTION: the .bqp files only store an aggregated
+     count per junction position, not the actual read sequences.
+     For the junction you've selected, this re-scans that dataset's
+     raw blast_results/*.blast.txt and junction_files/*.junctions.txt
+     files (reapplying the same hit-quality filter Junction Make
+     used) to find every individual read supporting that exact
+     junction, and shows the longest one. Because it's scanning raw
+     files that can be multiple gigabytes, this can take a couple of
+     minutes on large datasets - the progress dialog updates
+     continuously with how many MB have been scanned, so it stays
+     visibly live even when it's slow.
+
+     The result is two FASTA-formatted entries in the box on the
+     right (Copy button available): first the junction/downstream
+     sequence itself (gene name, 5' or 3', Forward or Backward),
+     then the complete original sequencing read it came from (gene
+     name, read identifier) - the underlying real sequencing read
+     ID and sequence, not just the trimmed fragment that was BLASTed.
+
+     The window can be resized: the junction table widens with the
+     window, and the "Sequence of interest" box at the bottom
+     absorbs any extra vertical space - the three plots stay a
+     fixed size either way.
+
 WHAT'S NEW IN THIS VERSION (DEEPN_26v1)
 
 This is a ground-up port from the original Python 2 / PyQt4 build (last
@@ -220,23 +272,11 @@ WHAT'S NEW IN v4
     and which file is currently being searched, and print the actual
     tag windows being matched against, instead of a generic message.
 
-WHAT'S COMING - FRAGFINDER
-
-  FragFinder is a planned new module for focusing on a single Y2H
-  dataset at once. The idea: line up a chosen gene's Read Depth
-  coverage, its 5' junction hits, and its 3' junction hits as three
-  linked plots sharing one position axis, alongside a table of every
-  junction found for that gene/dataset. Clicking a junction in the
-  table marks its position across all three plots.
-
-  It also adds "Extrapolate Junction" - for a junction you're
-  interested in, it re-scans the raw blast.txt/junctions.txt files
-  for that dataset to find the longest representative read
-  supporting that specific junction, and displays it FASTA-style
-  (read identifier, gene, 5'/3', forward/backward, sequence). This
-  is a slower, on-demand re-analysis step separate from the fast
-  plots, since it isn't something Junction Make's normal .bqp output
-  captures on its own.
+  - New module: FragFinder. See step 8 above for full details - a
+    single-dataset, single-gene view linking Read Depth, 5'
+    junctions, and 3' junctions together, with a new "Extrapolate
+    Junction" feature that finds the actual sequencing read behind a
+    specific junction by re-scanning Junction Make's raw output.
 """
 
 class vQlistWidgetItem(QtWidgets.QListWidgetItem):
@@ -440,6 +480,13 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             else:
                 self.read_depth_btn.setEnabled(False)
 
+            if os.path.exists(os.path.join(self.directory, 'blast_results_query')) and \
+                    len([fi for fi in self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')
+                        if fi.startswith('5p_')]) > 0:
+                self.fragfinder_btn.setEnabled(True)
+            else:
+                self.fragfinder_btn.setEnabled(False)
+
             if self.clicked_button != None:
                 for btn in self.buttons1:
                     btn.setEnabled(False)
@@ -452,6 +499,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.gene_count_junction_make_btn.setText("Gene Count + Junction Make")
             self.query_blast_btn.setText("Blast Query")
             self.read_depth_btn.setText("Read Depth")
+            self.fragfinder_btn.setText("FragFinder")
             time.sleep(0.1)
 
 
@@ -633,6 +681,17 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.clicked_button_text = self.clicked_button.text()
             self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
             self.process.start(script_path('read_depth_gui_v2.py'), [self.directory,
+                                                self.gene_list_file, str(self.combined)])
+        elif self.clicked_button == self.sender():
+            self.process.terminate()
+
+    @QtCore.pyqtSlot()
+    def on_fragfinder_btn_clicked(self):
+        if self.clicked_button is None:
+            self.clicked_button = self.sender()
+            self.clicked_button_text = self.clicked_button.text()
+            self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+            self.process.start(script_path('fragfinder_gui.py'), [self.directory,
                                                 self.gene_list_file, str(self.combined)])
         elif self.clicked_button == self.sender():
             self.process.terminate()

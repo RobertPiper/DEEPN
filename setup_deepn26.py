@@ -1,13 +1,14 @@
 """
-py2app setup script for DEEPN_26v3 (Python 3 / PyQt5 / native Apple Silicon port).
+py2app setup script for DEEPN_26v4 (Python 3 / PyQt5 / native Apple Silicon port).
 
 Builds one app bundle containing:
-  - deepn.py            (main launcher, Contents/MacOS/DEEPN_26v3)
-  - gene_count_gui.py    \
-  - junction_make_gui.py  \  extra_scripts: separate executables in
-  - gc_jm.py               / Contents/MacOS/, sharing the same embedded
-  - query_blast_gui.py    /  Python runtime as the main app.
-  - read_depth_gui.py    /
+  - deepn.py             (main launcher, Contents/MacOS/DEEPN_26v4)
+  - gene_count_gui.py     \
+  - junction_make_gui.py   \
+  - gc_jm.py                \  extra_scripts: separate executables in
+  - query_blast_gui.py      /  Contents/MacOS/, sharing the same embedded
+  - read_depth_gui_v2.py   /   Python runtime as the main app.
+  - fragfinder_gui.py     /
 
 Stat Maker is intentionally excluded - it was always a standalone app,
 never launched from the DEEPN launcher itself.
@@ -27,6 +28,7 @@ EXTRA_SCRIPTS = [
     'gc_jm.py',
     'query_blast_gui.py',
     'read_depth_gui_v2.py',
+    'fragfinder_gui.py',
 ]
 
 APP = [{

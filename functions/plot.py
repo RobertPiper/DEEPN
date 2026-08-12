@@ -12,6 +12,28 @@ form_class, base_class = uic.loadUiType(ui_path)
 
 __all__ = ['BarGraphItem']
 
+def make_legend_widget(entries):
+    """A small legend row (color swatch + label per entry) meant to sit below
+    a plot, rather than pyqtgraph's overlay legend which can obscure bars
+    near the edges of the plot."""
+    widget = QtWidgets.QWidget()
+    layout = QtWidgets.QHBoxLayout(widget)
+    layout.setContentsMargins(4, 0, 4, 4)
+    layout.setSpacing(14)
+    for color, text in entries:
+        entry_layout = QtWidgets.QHBoxLayout()
+        entry_layout.setSpacing(4)
+        swatch = QtWidgets.QLabel()
+        swatch.setFixedSize(12, 12)
+        swatch.setStyleSheet("background-color: %s; border-radius: 2px;" % color)
+        label = QtWidgets.QLabel(text)
+        label.setStyleSheet("font-size: 11px;")
+        entry_layout.addWidget(swatch)
+        entry_layout.addWidget(label)
+        layout.addLayout(entry_layout)
+    layout.addStretch()
+    return widget
+
 class BarGraphItem(pg.GraphicsObject):
     def __init__(self, **opts):
         pg.GraphicsObject.__init__(self)
@@ -220,18 +242,37 @@ class QBPlot(QtWidgets.QDialog, form_class):
 
 
 class RDPlot(pg.PlotWidget):
-    def __init__(self, xtitle, ytitle, *args):
+    def __init__(self, xtitle, ytitle, show_legend=True, *args):
         super(RDPlot, self).__init__(*args)
         self.x_axis_title = xtitle
         self.y_axis_title = ytitle
+        self.show_legend = show_legend
         self.plotItem.showGrid(True, True, alpha=0.2)
         self.plotItem.setLabel('bottom', text=self.x_axis_title)
         self.plotItem.setLabel('left', text=self.y_axis_title)
         self.plotItem.setMouseEnabled(x=False, y=False)
         self.plot_widget_viewbox = self.plotItem.getViewBox()
         self.plotItem.enableAutoRange(axis=self.plot_widget_viewbox.XYAxes)
-        self.plotItem.addLegend()
+        if self.show_legend:
+            self.plotItem.addLegend()
         self.legend_added = 0
+        self.marker_line = None
+
+    def mark_position(self, position):
+        if self.marker_line is not None:
+            self.removeItem(self.marker_line)
+        self.marker_line = pg.InfiniteLine(pos=position, angle=90,
+                                           pen=pg.mkPen({'color': '#000000', 'width': 2}, style=QtCore.Qt.DashLine))
+        self.addItem(self.marker_line)
+
+    def clear_marker(self):
+        if self.marker_line is not None:
+            self.removeItem(self.marker_line)
+            self.marker_line = None
+
+    def clear_plot(self):
+        self.clear()
+        self.marker_line = None
 
     def add_legends(self):
         style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1A64B0','width': 8}))
@@ -243,6 +284,7 @@ class RDPlot(pg.PlotWidget):
 
     def plot(self, data, start, stop):
         self.clear()
+        self.marker_line = None
         x_grey = []
         y_grey = []
         x_blue = []
@@ -280,8 +322,102 @@ class RDPlot(pg.PlotWidget):
                                   pen=pg.mkPen({'color':'#D13A26','width': 1}),
                                   brush='#D13A26'))
 
-        if self.legend_added == 0:
+        if self.show_legend and self.legend_added == 0:
             self.add_legends()
             self.legend_added = 1
+
+
+class JunctionPlot(pg.PlotWidget):
+    """Position-vs-ppm junction plot as a plain PlotWidget (rather than QBPlot's
+    QDialog wrapper), so it can be embedded directly and x-linked to RDPlot."""
+
+    def __init__(self, xtitle, ytitle, show_legend=True, *args):
+        super(JunctionPlot, self).__init__(*args)
+        self.x_axis_title = xtitle
+        self.y_axis_title = ytitle
+        self.show_legend = show_legend
+        self.plotItem.showGrid(True, True, alpha=0.2)
+        self.plotItem.setLabel('bottom', text=self.x_axis_title)
+        self.plotItem.setLabel('left', text=self.y_axis_title)
+        self.plotItem.setMouseEnabled(x=False, y=False)
+        self.plot_widget_viewbox = self.plotItem.getViewBox()
+        self.plotItem.enableAutoRange(axis=self.plot_widget_viewbox.XYAxes)
+        if self.show_legend:
+            self.plotItem.addLegend()
+        self.legend_added = 0
+        self.marker_line = None
+
+    def mark_position(self, position):
+        if self.marker_line is not None:
+            self.removeItem(self.marker_line)
+        self.marker_line = pg.InfiniteLine(pos=position, angle=90,
+                                           pen=pg.mkPen({'color': '#000000', 'width': 2}, style=QtCore.Qt.DashLine))
+        self.addItem(self.marker_line)
+
+    def clear_marker(self):
+        if self.marker_line is not None:
+            self.removeItem(self.marker_line)
+            self.marker_line = None
+
+    def add_legends(self):
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1A64B0','width': 8}))
+        self.plotItem.legend.addItem(style, "In ORF")
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#1CC5FF','width': 8}))
+        self.plotItem.legend.addItem(style, "Upstream")
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#777777','width': 8}))
+        self.plotItem.legend.addItem(style, "Downstream / Out of Frame")
+        style = pg.PlotDataItem(pen=pg.mkPen({'color':'#D13A26','width': 8}))
+        self.plotItem.legend.addItem(style, "Start/Stop of CDS")
+
+    def plot(self, junctions, start, stop):
+        self.clear()
+        self.marker_line = None
+        x_grey, y_grey = [], []
+        x_blue, y_blue = [], []
+        x_lightblue, y_lightblue = [], []
+        max_count = 0
+        for j in junctions:
+            if j.frame == "in_frame" and j.orf == "in_orf":
+                x_blue.append(j.position)
+                y_blue.append(j.ppm)
+                max_count = max(max_count, j.ppm)
+            elif j.frame == "in_frame" and j.orf == "upstream":
+                x_lightblue.append(j.position)
+                y_lightblue.append(j.ppm)
+                max_count = max(max_count, j.ppm)
+            else:
+                x_grey.append(j.position)
+                y_grey.append(j.ppm)
+                max_count = max(max_count, j.ppm)
+
+        x_neg = [start, stop]
+        if max_count > 1:
+            y_neg = [max_count * 0.05 * -1, max_count * 0.05 * -1]
+        else:
+            y_neg = [-1, -1]
+
+        self.addItem(BarGraphItem(x=x_blue, height=y_blue, width=5,
+                                  pen=pg.mkPen({'color':'#1A64B0','width': 1}),
+                                  brush='#1A64B0'))
+
+        self.addItem(BarGraphItem(x=x_lightblue, height=y_lightblue, width=5,
+                                  pen=pg.mkPen({'color':'#1CC5FF','width': 1}),
+                                  brush='#1CC5FF'))
+
+        self.addItem(BarGraphItem(x=x_grey, height=y_grey, width=5,
+                                  pen=pg.mkPen({'color':'#777777','width': 1}),
+                                  brush='#777777'))
+
+        self.addItem(BarGraphItem(x=x_neg, height=y_neg, width=20,
+                                  pen=pg.mkPen({'color':'#D13A26','width': 1}),
+                                  brush='#D13A26'))
+
+        if self.show_legend and self.legend_added == 0:
+            self.add_legends()
+            self.legend_added = 1
+
+    def clear_plot(self):
+        self.clear()
+        self.marker_line = None
 
 
