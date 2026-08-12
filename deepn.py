@@ -149,20 +149,24 @@ HOW TO USE THIS
   8. FragFinder (Analyze Data section) focuses on one gene within one
      dataset at a time, lining up Read Depth, 5' junctions, and 3'
      junctions together instead of checking each tool separately.
-     Enabled once the work folder has at least one 5p_*.bqp file.
+     Enabled once the work folder has at least one .bqp file.
 
      GETTING STARTED: search for a gene (same gene name/accession
      search as Blast Query and Read Depth) and pick a transcript.
      Then, for any of the three panels (Read Depth, 5' Junctions, 3'
      Junctions), click that panel's "Load..." button and pick a file
-     - a .sam file for Read Depth, a 5p_*.bqp or 3p_*.bqp file for
-     the junction panels. Picking a file for one panel automatically
-     tries to fill in the other two by matching the base filename
-     (swapping in the right prefix/suffix); if it can't find a
-     match, it opens a file picker for you to locate it, and
-     clicking Cancel there just leaves that panel empty - only a 5'
-     junction file is actually required, Read Depth and 3' junctions
-     can be skipped for datasets that don't have them.
+     from the standard file dialog - a .sam file for Read Depth, a
+     .bqp file for the junction panels. Picking a 5p_*.bqp/3p_*.bqp
+     file (the naming Junction Make produces as of v4) for one panel
+     automatically tries to fill in the other two by matching the
+     base filename (swapping in the right prefix/suffix); if it
+     can't find a match, it opens a file picker for you to locate it,
+     and clicking Cancel there just leaves that panel empty. Data
+     processed before v4 (with no 5p_/3p_ prefix at all) works too -
+     just pick each panel's file yourself, since there's no prefix
+     for FragFinder to match a companion by. Only a 5' junction file
+     is actually required; Read Depth and 3' junctions can be
+     skipped for datasets that don't have them.
 
      Each panel's header shows which file is currently loaded (": "
      followed by the filename). The Read Depth panel has its own
@@ -481,8 +485,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
                 self.read_depth_btn.setEnabled(False)
 
             if os.path.exists(os.path.join(self.directory, 'blast_results_query')) and \
-                    len([fi for fi in self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')
-                        if fi.startswith('5p_')]) > 0:
+                    len(self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')) > 0:
                 self.fragfinder_btn.setEnabled(True)
             else:
                 self.fragfinder_btn.setEnabled(False)

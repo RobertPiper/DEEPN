@@ -246,6 +246,13 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
         self.threep_base = None
         self.fivep_data = None
         self.threep_data = None
+        # The actual prefix found on the loaded filename ('5p_', '3p_', or ''
+        # for data processed before v4's prefix convention existed) - tracked
+        # separately per panel since a legacy unprefixed file can be loaded
+        # into either panel, and Extrapolate Junction needs this exact prefix
+        # to find the matching raw blast.txt/junctions.txt files.
+        self.fivep_file_prefix = ''
+        self.threep_file_prefix = ''
         self.table_row_data = []
         self.selected_junction = None
 
@@ -406,17 +413,27 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
     def on_threep_load_btn_clicked(self):
         self._load_bqp_via_dialog('3p')
 
+    @staticmethod
+    def _split_bqp_prefix(filename):
+        """Splits a .bqp filename into (prefix, base). Recognizes the v4
+        5p_/3p_ convention; anything else (including data processed before
+        that convention existed) is treated as unprefixed, with the whole
+        filename as the base."""
+        for candidate_prefix in ('5p_', '3p_'):
+            if filename.startswith(candidate_prefix):
+                return candidate_prefix, filename[len(candidate_prefix):-4]
+        return '', filename[:-4]
+
     def _load_bqp_via_dialog(self, direction):
         label = "5'" if direction == '5p' else "3'"
-        prefix = direction + '_'
         folder = os.path.join(self.directory, 'blast_results_query')
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Locate %s Junction .bqp file" % label, folder,
-                                                         "%s junction files (%s*.bqp)" % (label, prefix))
+                                                         "All .bqp files (*.bqp);;All files (*)")
         if not path:
             return
         filename = os.path.basename(path)
-        base = filename[len(prefix):-4] if filename.startswith(prefix) and filename.endswith('.bqp') else filename[:-4]
-        self._load_bqp(direction, filename, base)
+        file_prefix, base = self._split_bqp_prefix(filename)
+        self._load_bqp(direction, filename, base, file_prefix)
         self._prefill_companions(base, skip=direction)
 
     def _load_rd(self, filename, base):
@@ -424,15 +441,17 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
         self.rd_filename_lbl.setText(': ' + filename)
         self.update_plots_for_selected_gene()
 
-    def _load_bqp(self, direction, filename, base):
+    def _load_bqp(self, direction, filename, base, file_prefix):
         data = pickle.load(open(os.path.join(self.directory, 'blast_results_query', filename), 'rb'))
         if direction == '5p':
             self.fivep_base = base
             self.fivep_data = data
+            self.fivep_file_prefix = file_prefix
             self.fivep_filename_lbl.setText(': ' + filename)
         else:
             self.threep_base = base
             self.threep_data = data
+            self.threep_file_prefix = file_prefix
             self.threep_filename_lbl.setText(': ' + filename)
         self.update_plots_for_selected_gene()
 
@@ -451,7 +470,7 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
             self._load_rd(candidate, base)
             return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Locate matching Read Depth .sam file (Cancel to skip)",
-                                                         folder, "SAM files (*.sam)")
+                                                         folder, "SAM files (*.sam);;All files (*)")
         if path:
             filename = os.path.basename(path)
             self._load_rd(filename, filename[:-4] if filename.endswith('.sam') else filename)
@@ -462,14 +481,15 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
         folder = os.path.join(self.directory, 'blast_results_query')
         candidate = prefix + base + '.bqp'
         if os.path.exists(os.path.join(folder, candidate)):
-            self._load_bqp(direction, candidate, base)
+            self._load_bqp(direction, candidate, base, prefix)
             return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Locate matching %s Junction .bqp file (Cancel to skip)" % label,
-                                                         folder, "%s junction files (%s*.bqp)" % (label, prefix))
+                                                         folder, "%s junction files (%s*.bqp);;All .bqp files (*.bqp);;All files (*)" %
+                                                         (label, prefix))
         if path:
             filename = os.path.basename(path)
-            picked_base = filename[len(prefix):-4] if filename.startswith(prefix) and filename.endswith('.bqp') else filename[:-4]
-            self._load_bqp(direction, filename, picked_base)
+            file_prefix, picked_base = self._split_bqp_prefix(filename)
+            self._load_bqp(direction, filename, picked_base, file_prefix)
 
     # ---- plots + junction table ----
 
@@ -572,11 +592,11 @@ class FragFinder_Gui(QtWidgets.QMainWindow, form_class):
             return
         direction, j = self.selected_junction
         base = self.fivep_base if direction == '5p' else self.threep_base
+        file_prefix = self.fivep_file_prefix if direction == '5p' else self.threep_file_prefix
         if base is None:
             return
-        prefix = direction + '_'
-        blast_txt_path = os.path.join(self.directory, 'blast_results', prefix + base + '.blast.txt')
-        junctions_txt_path = os.path.join(self.directory, 'junction_files', prefix + base + '.junctions.txt')
+        blast_txt_path = os.path.join(self.directory, 'blast_results', file_prefix + base + '.blast.txt')
+        junctions_txt_path = os.path.join(self.directory, 'junction_files', file_prefix + base + '.junctions.txt')
         if not os.path.exists(blast_txt_path) or not os.path.exists(junctions_txt_path):
             QtWidgets.QMessageBox.warning(self, "Extrapolate Junction",
                                           "Could not find the raw BLAST/junction files for this dataset:\n%s\n%s" %
