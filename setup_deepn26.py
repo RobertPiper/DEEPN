@@ -1,8 +1,8 @@
 """
-py2app setup script for DEEPN_26v1 (Python 3 / PyQt5 / native Apple Silicon port).
+py2app setup script for DEEPN_26v3 (Python 3 / PyQt5 / native Apple Silicon port).
 
 Builds one app bundle containing:
-  - deepn.py            (main launcher, Contents/MacOS/DEEPN_26v1)
+  - deepn.py            (main launcher, Contents/MacOS/DEEPN_26v3)
   - gene_count_gui.py    \
   - junction_make_gui.py  \  extra_scripts: separate executables in
   - gc_jm.py               / Contents/MacOS/, sharing the same embedded
@@ -19,7 +19,7 @@ import os
 import glob
 from setuptools import setup
 
-APP_NAME = 'DEEPN_26v1'
+APP_NAME = 'DEEPN_26v3'
 
 EXTRA_SCRIPTS = [
     'gene_count_gui.py',
