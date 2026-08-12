@@ -463,9 +463,9 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     @QtCore.pyqtSlot()
     def on_method_info_btn_clicked(self):
         try:
-            with open(R_SCRIPT_PATH) as fh:
+            with open(R_SCRIPT_PATH, encoding='utf-8') as fh:
                 r_source = fh.read()
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             r_source = "(Could not read %s: %s)" % (R_SCRIPT_PATH, e)
 
         dialog = QtWidgets.QDialog(self)
