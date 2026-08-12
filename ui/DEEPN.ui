@@ -203,7 +203,7 @@
           </font>
          </property>
          <property name="text">
-          <string>Junction Sequence</string>
+          <string>5' Junction Sequence</string>
          </property>
         </widget>
        </item>
@@ -222,6 +222,50 @@
        </item>
        <item>
         <widget class="QLineEdit" name="junction_sequence_txt">
+         <property name="minimumSize">
+          <size>
+           <width>420</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>11</pointsize>
+          </font>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="process_data_layout_3p">
+       <item>
+        <widget class="QLabel" name="junction_3p_lbl">
+         <property name="font">
+          <font>
+           <pointsize>15</pointsize>
+          </font>
+         </property>
+         <property name="text">
+          <string>3' Junction Sequence</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="hs1p">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="junction_sequence_3p_txt">
          <property name="minimumSize">
           <size>
            <width>420</width>

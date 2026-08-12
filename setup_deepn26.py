@@ -19,7 +19,7 @@ import os
 import glob
 from setuptools import setup
 
-APP_NAME = 'DEEPN_26v3'
+APP_NAME = 'DEEPN_26v4'
 
 EXTRA_SCRIPTS = [
     'gene_count_gui.py',

@@ -204,7 +204,8 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.bar = itertools.cycle(['/', '-', '\\'])
         self._layouts = [self.analyze_data_layout, self.process_data_layout_1,
                          self.process_data_layout_2, self.process_data_layout_3,
-                         self.process_data_layout_4, self.status_layout]
+                         self.process_data_layout_3p, self.process_data_layout_4,
+                         self.status_layout]
         self.window = self.window()
         self.window.setGeometry(10, 30, self.width(), self.height())
         self.buttons = []
@@ -396,6 +397,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.db_selection = self.db_list_wgt.item(self.db_list_wgt.currentRow())
         for row in self.g_db.select('*', id=str(self.db_selection.data)):
             self.junction_sequence_txt.setText(row[7])
+            self.junction_sequence_3p_txt.setText(row[9] if len(row) > 9 and row[9] else '')
             self.gene_dictionary = str(row[4])
             self.chromosome_list = str(row[8])
             self.blast_db_name = str(row[6])
