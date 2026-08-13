@@ -80,6 +80,64 @@ if missing:
     print("ERROR: missing source dylibs: %s" % missing, file=sys.stderr)
     sys.exit(1)
 print("    Resolved and copied %d dylibs (transitive closure)." % len(seen))
+
+# Some dylibs (seen in the wild: mbedtls's libmbedx509/libmbedcrypto) reference
+# their own dependencies via bare @rpath/<soname> instead of
+# @executable_path/../Frameworks/<soname>, with an LC_RPATH that points
+# nowhere in our bundle (e.g. @loader_path/../lib, a directory that doesn't
+# exist here). dyld then falls back to the absolute Homebrew path baked in
+# at build time - which only "works" on a dev machine that happens to have
+# the same Homebrew package installed, and hard-crashes (SIGABRT, "Library
+# not loaded") on any other machine.
+#
+# Fix by redirecting each such dylib's LC_RPATH to '@loader_path' (its own
+# directory, where the closure-copy above already placed every dependency)
+# and adding a symlink under the exact soname each @rpath reference expects.
+# Deliberately NOT using install_name_tool -change on the @rpath/<soname>
+# dependency strings themselves: growing a load-command path string in
+# place (the replacement is always longer) can silently corrupt the Mach-O
+# header - confirmed by testing, it produced a dylib that made dyld hard-
+# kill (SIGKILL, no diagnostic) partway through loading. Shrinking an
+# LC_RPATH (the replacement here is always shorter) does not have this
+# failure mode.
+import re
+
+def base_name(name):
+    m = re.match(r'^(.*?)\.\d', name)
+    return m.group(1) if m else name
+
+def rpaths_of(path):
+    out = subprocess.check_output(['otool', '-l', path]).decode().splitlines()
+    paths = []
+    for i, line in enumerate(out):
+        if line.strip() == 'cmd LC_RPATH':
+            m = re.search(r'path (\S+)', out[i + 2])
+            if m:
+                paths.append(m.group(1))
+    return paths
+
+fixed = 0
+for d in sorted(seen):
+    path = os.path.join(dst, d)
+    out = subprocess.check_output(['otool', '-L', path]).decode()
+    rpath_deps = [l.strip().split()[0][len('@rpath/'):]
+                  for l in out.splitlines()[1:] if l.strip().startswith('@rpath/')]
+    if not rpath_deps:
+        continue
+    for old_rpath in rpaths_of(path):
+        subprocess.check_call(['install_name_tool', '-rpath', old_rpath, '@loader_path', path])
+    for ref_name in rpath_deps:
+        base = base_name(ref_name)
+        candidates = [f for f in seen if base_name(f) == base]
+        if len(candidates) != 1:
+            print("ERROR: cannot resolve @rpath/%s referenced by %s (candidates: %s)" % (ref_name, d, candidates), file=sys.stderr)
+            sys.exit(1)
+        link_path = os.path.join(dst, ref_name)
+        if not os.path.exists(link_path):
+            os.symlink(candidates[0], link_path)
+    fixed += 1
+
+print("    Fixed %d dylib(s) with unresolvable @rpath dependencies (redirected rpath, added soname symlinks)." % fixed)
 PYEOF
 
 echo ">>> Codesigning..."
