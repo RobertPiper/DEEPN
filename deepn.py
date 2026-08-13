@@ -157,15 +157,15 @@ HOW TO USE THIS
      Junctions), click that panel's "Load..." button and pick a file
      from the standard file dialog - a .sam file for Read Depth, a
      .bqp file for the junction panels. Picking a 5p_*.bqp/3p_*.bqp
-     file (the naming Junction Make produces as of v4) for one panel
+     file (the naming Junction Make normally produces) for one panel
      automatically tries to fill in the other two by matching the
      base filename (swapping in the right prefix/suffix); if it
      can't find a match, it opens a file picker for you to locate it,
-     and clicking Cancel there just leaves that panel empty. Data
-     processed before v4 (with no 5p_/3p_ prefix at all) works too -
-     just pick each panel's file yourself, since there's no prefix
-     for FragFinder to match a companion by. Only a 5' junction file
-     is actually required; Read Depth and 3' junctions can be
+     and clicking Cancel there just leaves that panel empty. Older
+     data with no 5p_/3p_ prefix at all works too - just pick each
+     panel's file yourself, since there's no prefix for FragFinder to
+     match a companion by. Only a 5' junction file is actually
+     required; Read Depth and 3' junctions can be
      skipped for datasets that don't have them.
 
      Each panel's header shows which file is currently loaded (": "
@@ -202,11 +202,12 @@ HOW TO USE THIS
      absorbs any extra vertical space - the three plots stay a
      fixed size either way.
 
-WHAT'S NEW IN THIS VERSION (DEEPN_26v1)
+WHAT'S NEW IN DEEPN_26
 
-This is a ground-up port from the original Python 2 / PyQt4 build (last
-updated 2018, Intel-only) to Python 3 / PyQt5, running natively on Apple
-Silicon. Beyond the language/framework port itself:
+Compared to the original 2018 build (Python 2 / PyQt4, Intel-only):
+
+  - Ground-up port to Python 3 / PyQt5, running natively on Apple
+    Silicon.
 
   - BLAST now runs natively. The original bundled an Intel-only BLAST
     2.2.30 binary, which needed Rosetta translation to run at all on
@@ -240,8 +241,6 @@ Silicon. Beyond the language/framework port itself:
     from the source repository and have been restored from the
     original DEEPN 3.7 build.
 
-WHAT'S NEW IN v3
-
   - Faster BLAST-results-to-.bqp conversion (Junction Make). Two
     inefficiencies in generating blast_results_query/*.bqp files from
     blastn's output were fixed, with no change to the output format
@@ -260,8 +259,6 @@ WHAT'S NEW IN v3
          no change to which junctions get counted or how they're
          counted (still by exact position + query start, still a
          simple +1 to an existing count on a repeat).
-
-WHAT'S NEW IN v4
 
   - 3' junction support. Added a "3' Junction Sequence" field
     alongside the existing field (now labeled "5' Junction
