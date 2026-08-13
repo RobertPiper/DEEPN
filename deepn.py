@@ -659,6 +659,14 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         if self.clicked_button is None:
             self.clicked_button = self.sender()
             self.clicked_button_text = self.clicked_button.text()
+            # Stop monitor_directory_for_changes() (a plain background thread
+            # that mutates Qt widgets directly, not a QThread with proper
+            # signal marshaling) before check_path()'s modal dialog runs its
+            # own nested event loop below - otherwise the two race, which is
+            # what was causing the warning dialog's Continue button to hang
+            # unresponsive with a spinning cursor.
+            self.proceed = 0
+            self.disable_unused_buttons()
             if self.prompt == 2:
                 self.check_path(self.directory, ['gene_count_summary', 'chromosome_files'])
             if self.quit == False:
@@ -676,6 +684,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         if self.clicked_button is None:
             self.clicked_button = self.sender()
             self.clicked_button_text = self.clicked_button.text()
+            # See the matching comment in on_gene_count_btn_clicked.
+            self.proceed = 0
+            self.disable_unused_buttons()
             if self.prompt == 2:
                 self.check_path(self.directory, ['junction_files', 'blast_results', 'blast_results_query'])
             if self.quit == False:
@@ -696,6 +707,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         if self.clicked_button is None:
             self.clicked_button = self.sender()
             self.clicked_button_text = self.clicked_button.text()
+            # See the matching comment in on_gene_count_btn_clicked.
+            self.proceed = 0
+            self.disable_unused_buttons()
             if self.prompt == 2:
                 self.check_path(self.directory, ['junction_files', 'blast_results',
                                                  'blast_results_query', 'gene_count_summary',
