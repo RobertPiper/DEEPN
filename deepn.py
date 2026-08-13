@@ -606,6 +606,15 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         if self.clicked_button:
             self.db_list_wgt.setEnabled(False)
 
+        # process_started() (which calls this) sets self.proceed = 0, which
+        # stops monitor_directory_for_changes() - the only other place this
+        # gets called. Without this, the viewer buttons (Blast Query, Read
+        # Depth, FragFinder, Stat Maker) stay frozen in whatever state they
+        # were in the instant before processing started, i.e. enabled, for
+        # the entire Gene Count/Junction Make/GC+JM run - even though that
+        # run wants every core for blastn.
+        self._update_viewer_buttons_enabled()
+
     def process_started(self):
         self.status_text.clear()
         self.proceed = 0

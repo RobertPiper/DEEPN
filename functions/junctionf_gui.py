@@ -130,7 +130,14 @@ class junctionf():
                     remaining = max(0, total_sequences - completed)
                     eta_minutes = (remaining / rate / 60.0) if rate > 0 else 0
                     pct = (completed * 100.0 / total_sequences) if total_sequences else 0
-                    print(">>> BLAST progress: %d / %d sequences (%.0f%%) - last %d took %.0fs, ~%.1f min remaining" %
+                    # \r, not a trailing newline, same convention as the
+                    # junction-scan progress above - updates the current
+                    # line in place (both in a real terminal and in deepn.py's
+                    # status box, which strips the \r and overwrites the
+                    # current line for anything that isn't a new section
+                    # header - see start_match in deepn.py) instead of
+                    # stacking a new line per checkpoint.
+                    sys.stdout.write('\rBLAST progress: %d / %d sequences (%.0f%%) - last %d took %.0fs, ~%.1f min remaining' %
                          (completed, total_sequences, pct, done_this_round, elapsed, eta_minutes))
                     sys.stdout.flush()
                     last_checkpoint_count = completed
