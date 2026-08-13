@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import struct
 import platform
 import pickle
@@ -96,6 +97,47 @@ class junctionf():
             self.fileio.make_FASTA(os.path.join(directory, infolder, f),
                                    os.path.join(directory, outfolder, f[:-4] + ".fa"))
 
+    def _count_fasta_sequences(self, fa_path):
+        count = 0
+        with open(fa_path, 'r') as fh:
+            for line in fh:
+                if line.startswith('>'):
+                    count += 1
+        return count
+
+    def _monitor_blast_progress(self, output_file, total_sequences, stop_event, checkpoint=1000):
+        """blastn has no progress flag, but with -outfmt 7 it writes a
+        "# Query: ..." line to the output file the moment each query
+        finishes - so the growing output file itself is the progress
+        signal. Polls every couple seconds (pure I/O wait, negligible CPU)
+        and prints an update every `checkpoint` completed sequences, with
+        an ETA based on the actual rate over the last checkpoint interval."""
+        last_pos = 0
+        completed = 0
+        last_checkpoint_count = 0
+        last_checkpoint_time = time.time()
+        while not stop_event.is_set():
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as fh:
+                    fh.seek(last_pos)
+                    chunk = fh.read()
+                    last_pos = fh.tell()
+                completed += chunk.count('# Query:')
+                if completed - last_checkpoint_count >= checkpoint:
+                    now = time.time()
+                    elapsed = now - last_checkpoint_time
+                    done_this_round = completed - last_checkpoint_count
+                    rate = done_this_round / elapsed if elapsed > 0 else 0
+                    remaining = max(0, total_sequences - completed)
+                    eta_minutes = (remaining / rate / 60.0) if rate > 0 else 0
+                    pct = (completed * 100.0 / total_sequences) if total_sequences else 0
+                    print(">>> BLAST progress: %d / %d sequences (%.0f%%) - last %d took %.0fs, ~%.1f min remaining" %
+                         (completed, total_sequences, pct, done_this_round, elapsed, eta_minutes))
+                    sys.stdout.flush()
+                    last_checkpoint_count = completed
+                    last_checkpoint_time = now
+            stop_event.wait(2.0)
+
     def blast_search(self, directory, db_name, blast_results_folder, blast_results_query, prefix):
         platform_specific_path = 'osx'
         suffix = ''
@@ -135,15 +177,31 @@ class junctionf():
 
         for file_name in file_list:
             output_file = os.path.join(directory, blast_results_folder, file_name.replace(".junctions.fa", '.blast.txt'))
-            print(">>> Running BLAST search for file: " + file_name)
+            fa_path = os.path.join(directory, blast_results_folder, file_name)
+            total_sequences = self._count_fasta_sequences(fa_path)
+            print(">>> Running BLAST search for file: %s (%d sequences)" % (file_name, total_sequences))
             blast_command_list = [os.path.join(blast_path, 'blastn' + suffix),
                                   '-query', os.path.join(directory, 'blast_results', file_name), '-db', db_path,
                                   '-task',  'blastn', '-dust', 'no', '-num_threads', str(num_threads),
                                   '-outfmt', '7', '-out', output_file, '-evalue', '0.2', '-max_target_seqs', '10']
 
             sys.stdout.flush()
+            # A stale output_file from a previous failed attempt would
+            # otherwise inflate the progress monitor's initial query count
+            # until blastn's own fresh write overwrites it.
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
+            stop_event = threading.Event()
+            progress_thread = threading.Thread(target=self._monitor_blast_progress,
+                                               args=(output_file, total_sequences, stop_event),
+                                               daemon=True)
+            progress_thread.start()
+
             self.blast_pipe = subprocess.Popen(blast_command_list, shell=False, stderr=subprocess.PIPE)
             _, stderr_output = self.blast_pipe.communicate()
+            stop_event.set()
+            progress_thread.join(timeout=3.0)
             return_code = self.blast_pipe.returncode
             if return_code != 0 or not os.path.exists(output_file):
                 # A failed blastn used to go unnoticed: nothing checked its
