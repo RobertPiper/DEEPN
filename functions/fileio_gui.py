@@ -51,6 +51,8 @@ class fileio():
             sys.stdout.write(">>> Cleaned up file %s in folder %s\n" % (fi, folder))
 
     def make_FASTA(self, junctionFile, outputFile):
+        sys.stdout.write('>>> Writing %s as FASTA...\n' % os.path.split(junctionFile)[-1])
+        sys.stdout.flush()
         counter = 0
         inFile = open(junctionFile, 'r')
         outFile = open(outputFile, 'w')
