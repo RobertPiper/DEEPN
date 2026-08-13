@@ -380,10 +380,6 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self._viewer_button_labels = {btn: btn.text() for btn in self.viewer_buttons}
         self._viewer_processes = {}
 
-        # Checkbox
-        self.prompt_box.stateChanged.connect(self.on_prompt_box_stateChanged)
-        self.info_btn.clicked.connect(self.on_info_btn_clicked)
-
         # QProcess object for external app
         app.aboutToQuit.connect(self.on_about_to_quit)
         self.process = QtCore.QProcess(self)
@@ -416,6 +412,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.comment.continue_btn.clicked.connect(self.comment_continue_signal)
         self.comment.quit_btn.setEnabled(False)
 
+    @QtCore.pyqtSlot()
     def on_info_btn_clicked(self):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("DEEPN Info")
