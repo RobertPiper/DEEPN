@@ -118,12 +118,27 @@ class junctionf():
         sys.stdout.flush()
         file_list = [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".fa") if f.startswith(prefix)]
 
+        # Leave one core free rather than requesting every core - otherwise
+        # blastn saturates the whole machine and everything else (including
+        # this app's own GUI) becomes unresponsive for the run's duration.
+        # On macOS there's no API for a regular app to pin threads to
+        # specific cores, or even to just the Performance cores - only a
+        # thread *count*, which is all this controls; which physical cores
+        # actually run those threads is entirely up to the OS scheduler.
+        # Windows and Linux both expose explicit CPU affinity to user
+        # processes and can report which cores are P-cores vs E-cores, so
+        # if this is ever ported there, it may be worth explicitly keeping
+        # blastn off the E-cores instead of just reducing the thread count -
+        # but that needs testing against whatever OS-version scheduling
+        # behavior exists at the time, not assumptions made now.
+        num_threads = max(1, joblib.cpu_count() - 1)
+
         for file_name in file_list:
             output_file = os.path.join(directory, blast_results_folder, file_name.replace(".junctions.fa", '.blast.txt'))
             print(">>> Running BLAST search for file: " + file_name)
             blast_command_list = [os.path.join(blast_path, 'blastn' + suffix),
                                   '-query', os.path.join(directory, 'blast_results', file_name), '-db', db_path,
-                                  '-task',  'blastn', '-dust', 'no', '-num_threads', str(joblib.cpu_count()),
+                                  '-task',  'blastn', '-dust', 'no', '-num_threads', str(num_threads),
                                   '-outfmt', '7', '-out', output_file, '-evalue', '0.2', '-max_target_seqs', '10']
 
             sys.stdout.flush()
