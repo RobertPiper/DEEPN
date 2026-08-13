@@ -126,6 +126,15 @@ for d in sorted(seen):
         continue
     for old_rpath in rpaths_of(path):
         subprocess.check_call(['install_name_tool', '-rpath', old_rpath, '@loader_path', path])
+    # install_name_tool invalidates the embedded signature, and codesign
+    # --deep on the whole app (run later in this script) does NOT reach
+    # into this non-standard, 4-levels-deep Resources path - confirmed by
+    # testing, it leaves the pre-modification signature in place, which
+    # then legitimately mismatches the file content. At runtime the kernel
+    # catches that mismatch and SIGKILLs the process (CODESIGNING, "Invalid
+    # Page") the moment dyld tries to load it. Re-sign explicitly here,
+    # same as the liblzma.5.dylib fix above does for the same reason.
+    subprocess.check_call(['codesign', '--force', '--sign', '-', path])
     for ref_name in rpath_deps:
         base = base_name(ref_name)
         candidates = [f for f in seen if base_name(f) == base]
