@@ -94,10 +94,9 @@ cat > "$TMP_QUERY" <<'EOF'
 >test
 ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
 EOF
-DB=$(ls "$APP/Contents/Resources/ncbi_blast/db/"*.ndb | head -1)
-DB="${DB%.ndb}"
+DB_NAME=$(basename "$(ls "$APP/Contents/Resources/ncbi_blast/db/"*.ndb | head -1)" .ndb)
 (cd "$APP/Contents/Resources" && ./ncbi_blast/bin/osx/arm64/blastn \
-    -query "$TMP_QUERY" -db "$(python3 -c "import os; print(os.path.relpath('$DB', '.'))")" \
+    -query "$TMP_QUERY" -db "ncbi_blast/db/$DB_NAME" \
     -task blastn -dust no -num_threads 2 -outfmt 7 -out /tmp/deepn_build_smoketest.txt \
     -evalue 0.2 -max_target_seqs 10)
 if [ -s /tmp/deepn_build_smoketest.txt ]; then
