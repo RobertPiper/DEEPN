@@ -93,11 +93,25 @@ if __name__ == '__main__':
     #                         [junction_folder, blast_results_folder, blast_results_query])
     initialize_folders(main_directory)
 
+    # All junction searches (one full pass over the .sam files per enabled
+    # direction) run to completion before either direction starts BLASTing -
+    # "designating" junctions is a distinct phase from BLASTing them, not
+    # interleaved per direction.
     if blast_5p:
         sys.stdout.write("\n>>> Running 5' junction search...\n")
         sys.stdout.flush()
         junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
                                  blast_results_query, junction_sequence, exclusion_sequence, '5p_')
+
+    if blast_3p and junction_sequence_3p:
+        sys.stdout.write("\n>>> Running 3' junction search...\n")
+        sys.stdout.flush()
+        junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
+                                 blast_results_query, junction_sequence_3p, exclusion_sequence, '3p_')
+
+    if blast_5p:
+        sys.stdout.write("\n>>> Running 5' BLAST search...\n")
+        sys.stdout.flush()
         junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '5p_')
         junctionf.generate_tabulated_blast_results(main_directory,
                                                    blast_results_folder,
@@ -105,10 +119,8 @@ if __name__ == '__main__':
                                                    gene_list_file, '5p_')
 
     if blast_3p and junction_sequence_3p:
-        sys.stdout.write("\n>>> Running 3' junction search...\n")
+        sys.stdout.write("\n>>> Running 3' BLAST search...\n")
         sys.stdout.flush()
-        junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
-                                 blast_results_query, junction_sequence_3p, exclusion_sequence, '3p_')
         junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '3p_')
         junctionf.generate_tabulated_blast_results(main_directory,
                                                    blast_results_folder,
