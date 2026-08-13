@@ -86,7 +86,11 @@ if __name__ == '__main__':
     junctionf = j.junctionf(fileio, printio)
     sys.stdout.write("\n*** Junction Search ***\n\n")
     sys.stdout.flush()
-    # signal.signal(signal.SIGTERM, junctionf.sigterm_handler)
+    # Without this, terminating this process (via the launcher's Abort
+    # button, or DEEPN quitting mid-run) leaves any in-flight blastn
+    # subprocess running as an orphan - SIGTERM doesn't propagate to
+    # children automatically, so it has to be handled explicitly here.
+    signal.signal(signal.SIGTERM, junctionf.sigterm_handler)
 
     # printio.print_comment("Comment1")
     # fileio.input_data_check(main_directory, input_data_folder, '.sam',

@@ -141,10 +141,15 @@ HOW TO USE THIS
      each window. A gene/dataset only works here once Gene Count has
      already processed that .sam file.
 
-  7. Stat Maker (launched separately - see its own Method Info button)
-     compares a bait against a vector control using the
-     gene_count_summary and .bqp files from steps 3-4, and produces
-     one combined results table.
+  7. Stat Maker (Analyze Data section - see its own Method Info button
+     for the DESeq2 method and citation) compares a bait against a
+     vector control using the gene_count_summary and .bqp files from
+     steps 3-4, and produces one combined results table. Unlike the
+     other Analyze Data tools, it needs no library or work folder
+     selected here - it does its own folder/dataset selection - so
+     its button is available as soon as DEEPN opens. It's also still
+     available as its own separate app for anyone who just wants
+     Stat Maker without the rest of DEEPN.
 
   8. FragFinder (Analyze Data section) focuses on one gene within one
      dataset at a time, lining up Read Depth, 5' junctions, and 3'
@@ -278,6 +283,42 @@ Compared to the original 2018 build (Python 2 / PyQt4, Intel-only):
     junctions, and 3' junctions together, with a new "Extrapolate
     Junction" feature that finds the actual sequencing read behind a
     specific junction by re-scanning Junction Make's raw output.
+
+  - Junction Make now finishes searching for junctions in every
+    direction you've checked before BLASTing any of them, instead of
+    fully finishing 5' (search through BLAST through cleanup) before
+    3' searching even starts.
+
+  - BLAST now leaves one CPU core free instead of claiming every one,
+    so the rest of the machine (including DEEPN's own window) stays
+    usable while it runs.
+
+  - BLAST progress. blastn has no built-in progress option, but the
+    growing results file itself shows how many sequences have been
+    completed - so Junction Make now prints an update, with an
+    estimated time remaining, every 10,000 completed sequences.
+
+  - Aborting a running Gene Count/Junction Make/GC+JM (or quitting
+    DEEPN entirely while one is running) now actually stops it,
+    including any BLAST search in progress - previously the
+    underlying processes, including blastn, kept running in the
+    background with no way to stop them short of quitting them
+    manually.
+
+  - The live output box no longer greys out and becomes hard to read
+    while Gene Count/Junction Make/GC+JM is running.
+
+  - Blast Query, Read Depth, FragFinder, and Stat Maker can now be
+    open at the same time as each other, instead of only one being
+    allowed at once. They're still blocked while Gene Count/Junction
+    Make/GC+JM is actually running, so BLAST always has the full
+    machine to itself.
+
+  - New: Stat Maker button (Analyze Data section). Needs no library
+    or work folder selection - same as before, it does its own
+    dataset selection - so it's available as soon as DEEPN opens.
+    Still also available as its own separate app for anyone who just
+    wants Stat Maker on its own.
 """
 
 class vQlistWidgetItem(QtWidgets.QListWidgetItem):
@@ -304,10 +345,13 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.chromosome_list = ''
         self.start_match = re.compile(r'^[>>>|\t|***]')
         self.bar = itertools.cycle(['/', '-', '\\'])
+        # status_layout (the live output box) is deliberately excluded here -
+        # this list is only used to collect widgets that get disabled during
+        # a run, and a disabled QPlainTextEdit renders with dimmed text,
+        # making the running output hard to read right when it matters most.
         self._layouts = [self.analyze_data_layout, self.process_data_layout_1,
                          self.process_data_layout_2, self.process_data_layout_3,
-                         self.process_data_layout_3p, self.process_data_layout_4,
-                         self.status_layout]
+                         self.process_data_layout_3p, self.process_data_layout_4]
         self.window = self.window()
         self.window.setGeometry(10, 30, self.width(), self.height())
         self.buttons = []
@@ -327,11 +371,21 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             if btn != None:
                 self.buttons1.append(btn)
 
+        # Viewer tools (Blast Query, Read Depth, FragFinder) each run in their
+        # own QProcess and can be open concurrently with each other. They're
+        # only blocked while a processing tool (Gene Count/Junction Make/
+        # GC+JM, which share self.process below) is actually running, so
+        # blastn always has the full machine to itself.
+        self.viewer_buttons = [self.query_blast_btn, self.read_depth_btn, self.fragfinder_btn, self.stat_maker_btn]
+        self._viewer_button_labels = {btn: btn.text() for btn in self.viewer_buttons}
+        self._viewer_processes = {}
+
         # Checkbox
         self.prompt_box.stateChanged.connect(self.on_prompt_box_stateChanged)
         self.info_btn.clicked.connect(self.on_info_btn_clicked)
 
         # QProcess object for external app
+        app.aboutToQuit.connect(self.on_about_to_quit)
         self.process = QtCore.QProcess(self)
         self.process.readyReadStandardOutput.connect(self.stdout_ready)
         # self.process.readyReadStandardError.connect(self.stderr_ready)
@@ -353,6 +407,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.disable_unused_buttons()
         for btn in self.buttons1:
             btn.setEnabled(False)
+        # Stat Maker needs no library/folder selection - it's usable
+        # immediately, unlike every other Analyze Data button.
+        self.stat_maker_btn.setEnabled(True)
 
         self.message.quit_btn.clicked.connect(self.message_quit_signal)
         self.message.continue_btn.clicked.connect(self.message_continue_signal)
@@ -466,27 +523,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
                 self.combined = 1
                 enable_buttons()
 
-            if os.path.exists(os.path.join(self.directory, 'blast_results_query')):
-                if len(self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')) <= 0:
-                    self.query_blast_btn.setEnabled(False)
-                else:
-                    self.query_blast_btn.setEnabled(True)
-            else:
-                self.query_blast_btn.setEnabled(False)
-
-
-            if os.path.exists(os.path.join(self.directory, 'gene_count_summary')) and \
-                    (len(self.fileio.get_file_list(self.directory, 'mapped_sam_files', '.sam')) > 0 or
-                     len(self.fileio.get_file_list(self.directory, 'sam_files', '.sam')) > 0):
-                self.read_depth_btn.setEnabled(True)
-            else:
-                self.read_depth_btn.setEnabled(False)
-
-            if os.path.exists(os.path.join(self.directory, 'blast_results_query')) and \
-                    len(self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')) > 0:
-                self.fragfinder_btn.setEnabled(True)
-            else:
-                self.fragfinder_btn.setEnabled(False)
+            self._update_viewer_buttons_enabled()
 
             if self.clicked_button != None:
                 for btn in self.buttons1:
@@ -498,9 +535,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.gene_count_btn.setText("Gene Count")
             self.junction_make_btn.setText("Junction Make")
             self.gene_count_junction_make_btn.setText("Gene Count + Junction Make")
-            self.query_blast_btn.setText("Blast Query")
-            self.read_depth_btn.setText("Read Depth")
-            self.fragfinder_btn.setText("FragFinder")
+            for btn in self.viewer_buttons:
+                if btn not in self._viewer_processes:
+                    btn.setText(self._viewer_button_labels[btn])
             time.sleep(0.1)
 
 
@@ -583,6 +620,21 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.proceed = 1
         threading.Thread(target=self.monitor_directory_for_changes, daemon=True).start()
 
+    def on_about_to_quit(self):
+        # Without this, quitting DEEPN mid-run leaves whatever it launched
+        # (Gene Count/Junction Make/GC+JM, or any open viewer tool) running
+        # as an orphan - and for Junction Make specifically, its own blastn
+        # child would be orphaned right along with it. terminate() sends
+        # SIGTERM, which junction_make_gui.py now catches to clean up its
+        # own blast subprocess before exiting.
+        if self.process.state() != QtCore.QProcess.NotRunning:
+            self.process.terminate()
+            self.process.waitForFinished(3000)
+        for proc in list(self._viewer_processes.values()):
+            if proc.state() != QtCore.QProcess.NotRunning:
+                proc.terminate()
+                proc.waitForFinished(3000)
+
     def kill_processes(self, name):
         time.sleep(1)
         os.system('kill $(ps aux | awk \'/' + name + '/ {print $2}\')')
@@ -664,38 +716,71 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.process.terminate()
             self.kill_processes('gene_count_gui.py')
 
+    def _launch_viewer_tool(self, button, script, arguments):
+        """Blast Query, Read Depth, and FragFinder each get their own QProcess
+        (unlike Gene Count/Junction Make/GC+JM, which share self.process and
+        stay mutually exclusive so blastn always has full use of the machine's
+        cores). That means any number of viewer tools can be open together,
+        as long as none of the processing tools are currently running - see
+        _update_viewer_buttons_enabled()."""
+        proc = self._viewer_processes.get(button)
+        if proc is not None:
+            proc.terminate()
+            return
+        proc = QtCore.QProcess(self)
+        proc.finished.connect(lambda *a, b=button: self._on_viewer_process_finished(b))
+        self._viewer_processes[button] = proc
+        button.setText("Abort")
+        self.status_bar.showMessage("Running %s ..." % self._viewer_button_labels[button])
+        proc.start(script_path(script), arguments)
+
+    def _on_viewer_process_finished(self, button):
+        button.setText(self._viewer_button_labels[button])
+        self.status_bar.showMessage("%s process ended!" % self._viewer_button_labels[button], 5000)
+        self._viewer_processes.pop(button, None)
+
+    def _viewer_prereq_met(self, button):
+        if button is self.query_blast_btn or button is self.fragfinder_btn:
+            return os.path.exists(os.path.join(self.directory, 'blast_results_query')) and \
+                len(self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')) > 0
+        if button is self.read_depth_btn:
+            return os.path.exists(os.path.join(self.directory, 'gene_count_summary')) and \
+                (len(self.fileio.get_file_list(self.directory, 'mapped_sam_files', '.sam')) > 0 or
+                 len(self.fileio.get_file_list(self.directory, 'sam_files', '.sam')) > 0)
+        if button is self.stat_maker_btn:
+            # Stat Maker needs nothing from DEEPN's selected library/folder -
+            # it does its own folder and dataset selection internally, so
+            # it's available any time (still gated behind "not processing_busy"
+            # by the caller, same as every other viewer tool).
+            return True
+        return False
+
+    def _update_viewer_buttons_enabled(self):
+        processing_busy = self.clicked_button is not None
+        for btn in self.viewer_buttons:
+            if btn in self._viewer_processes:
+                btn.setEnabled(True)
+            else:
+                btn.setEnabled((not processing_busy) and self._viewer_prereq_met(btn))
+
     @QtCore.pyqtSlot()
     def on_query_blast_btn_clicked(self):
-        if self.clicked_button is None:
-            self.clicked_button = self.sender()
-            self.clicked_button_text = self.clicked_button.text()
-            self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-            arguments = [self.directory, self.gene_list_file]
-            self.process.start(script_path('query_blast_gui.py'), arguments)
-        elif self.clicked_button == self.sender():
-            self.process.terminate()
+        self._launch_viewer_tool(self.query_blast_btn, 'query_blast_gui.py',
+                                 [self.directory, self.gene_list_file])
 
     @QtCore.pyqtSlot()
     def on_read_depth_btn_clicked(self):
-        if self.clicked_button is None:
-            self.clicked_button = self.sender()
-            self.clicked_button_text = self.clicked_button.text()
-            self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-            self.process.start(script_path('read_depth_gui_v2.py'), [self.directory,
-                                                self.gene_list_file, str(self.combined)])
-        elif self.clicked_button == self.sender():
-            self.process.terminate()
+        self._launch_viewer_tool(self.read_depth_btn, 'read_depth_gui_v2.py',
+                                 [self.directory, self.gene_list_file, str(self.combined)])
 
     @QtCore.pyqtSlot()
     def on_fragfinder_btn_clicked(self):
-        if self.clicked_button is None:
-            self.clicked_button = self.sender()
-            self.clicked_button_text = self.clicked_button.text()
-            self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-            self.process.start(script_path('fragfinder_gui.py'), [self.directory,
-                                                self.gene_list_file, str(self.combined)])
-        elif self.clicked_button == self.sender():
-            self.process.terminate()
+        self._launch_viewer_tool(self.fragfinder_btn, 'fragfinder_gui.py',
+                                 [self.directory, self.gene_list_file, str(self.combined)])
+
+    @QtCore.pyqtSlot()
+    def on_stat_maker_btn_clicked(self):
+        self._launch_viewer_tool(self.stat_maker_btn, 'stat_maker_gui_v2.py', [])
 
 form = DEEPN_Launcher()
 form.show()

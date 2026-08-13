@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds DEEPN_26v4.app end to end: py2app, then two post-build fixes py2app
+# Builds DEEPN_26v5.app end to end: py2app, then two post-build fixes py2app
 # doesn't handle correctly on its own, then codesigning and verification.
 #
 # Usage:
@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="dist/DEEPN_26v4.app"
+APP="dist/DEEPN_26v5.app"
 
 echo ">>> Cleaning previous build..."
 rm -rf "$APP"

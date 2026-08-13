@@ -518,6 +518,21 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="stat_maker_btn">
+         <property name="font">
+          <font>
+           <pointsize>14</pointsize>
+           <weight>50</weight>
+           <bold>false</bold>
+           <strikeout>false</strikeout>
+          </font>
+         </property>
+         <property name="text">
+          <string>Stat Maker</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
      <item>
@@ -603,6 +618,7 @@
   <tabstop>query_blast_btn</tabstop>
   <tabstop>read_depth_btn</tabstop>
   <tabstop>fragfinder_btn</tabstop>
+  <tabstop>stat_maker_btn</tabstop>
  </tabstops>
  <resources/>
  <connections/>

@@ -27,21 +27,20 @@ class junctionf():
         self.printio = p
         self.process = process.process()
         self.blast_pipe = None
-        self._spin = None
 
     def sigterm_handler(self, _signo, _stack_frame):
-        if self.blast_pipe:
+        # blastn is a subprocess of this process, not of DEEPN's launcher -
+        # SIGTERM sent to us (via the launcher's Abort button, or DEEPN
+        # quitting while this is running) doesn't automatically reach our
+        # own child. Without this handler blastn just keeps running,
+        # orphaned, using full CPU, with no way to stop it short of killing
+        # it manually in Activity Monitor.
+        if self.blast_pipe and self.blast_pipe.poll() is None:
             self.blast_pipe.terminate()
-
-        if self._spin:
-            self._spin.stop()
-
-        if self.blast_pipe < 0:
-            print(">>> Terminated Process (%d). Now Exiting Gracefully!" % self.blast_pipe)
-            sys.stdout.flush()
+            print(">>> Terminated BLAST process. Exiting.")
         else:
-            print(">>> All Process Terminated. Exiting Gracefully!")
-            sys.stdout.flush()
+            print(">>> Exiting.")
+        sys.stdout.flush()
         sys.exit()
 
     def _getjunction(self, begin):

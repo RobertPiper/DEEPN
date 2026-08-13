@@ -1,17 +1,21 @@
 """
-py2app setup script for DEEPN_26v4 (Python 3 / PyQt5 / native Apple Silicon port).
+py2app setup script for DEEPN_26v5 (Python 3 / PyQt5 / native Apple Silicon port).
 
 Builds one app bundle containing:
-  - deepn.py             (main launcher, Contents/MacOS/DEEPN_26v4)
+  - deepn.py             (main launcher, Contents/MacOS/DEEPN_26v5)
   - gene_count_gui.py     \
   - junction_make_gui.py   \
   - gc_jm.py                \  extra_scripts: separate executables in
-  - query_blast_gui.py      /  Contents/MacOS/, sharing the same embedded
-  - read_depth_gui_v2.py   /   Python runtime as the main app.
-  - fragfinder_gui.py     /
+  - query_blast_gui.py      \  Contents/MacOS/, sharing the same embedded
+  - read_depth_gui_v2.py     /  Python runtime as the main app.
+  - fragfinder_gui.py       /
+  - stat_maker_gui_v2.py   /
 
-Stat Maker is intentionally excluded - it was always a standalone app,
-never launched from the DEEPN launcher itself.
+Stat Maker needs no state from DEEPN's own database (it does its own
+folder/dataset selection internally), so it's bundled here as a launcher
+module *and* still built separately as its own standalone app via
+setup_statmaker26.py - same script, two independent builds, no shared
+state between them.
 
 Usage:
     python3 setup_deepn26.py py2app
@@ -20,7 +24,7 @@ import os
 import glob
 from setuptools import setup
 
-APP_NAME = 'DEEPN_26v4'
+APP_NAME = 'DEEPN_26v5'
 
 EXTRA_SCRIPTS = [
     'gene_count_gui.py',
@@ -29,6 +33,7 @@ EXTRA_SCRIPTS = [
     'query_blast_gui.py',
     'read_depth_gui_v2.py',
     'fragfinder_gui.py',
+    'stat_maker_gui_v2.py',
 ]
 
 APP = [{
@@ -76,6 +81,7 @@ DATA_FILES += find_data_dir('dictionaries', 'dictionaries')
 DATA_FILES += find_data_dir('lists', 'lists')
 DATA_FILES += find_data_dir('ncbi_blast', 'ncbi_blast')
 DATA_FILES += find_data_dir('icon', 'icon')
+DATA_FILES += find_data_dir('r_scripts', 'r_scripts')
 DATA_FILES += [
     ('.', ['DEEPN_db.sqlite3', 'Y2Hreadme.txt', 'DragDropListView.py']),
 ]
@@ -87,7 +93,7 @@ OPTIONS = {
         'glob', 'pickle', 'time', 'sys', 'os', 'pydoc', 'json', 'numbers',
         'hashlib', 'decimal', 'threading', 'itertools', 'pyqtgraph',
         'joblib', 'sortedcontainers', 'xlsxwriter', 'numpy', 'pandas',
-        'matplotlib',
+        'matplotlib', 'csv', 're', 'shutil', 'subprocess',
     ],
     'packages': ['functions'],
     'iconfile': 'icon/Icon.icns',
