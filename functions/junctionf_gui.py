@@ -105,7 +105,7 @@ class junctionf():
                     count += 1
         return count
 
-    def _monitor_blast_progress(self, output_file, total_sequences, stop_event, checkpoint=1000):
+    def _monitor_blast_progress(self, output_file, total_sequences, stop_event, checkpoint=10000):
         """blastn has no progress flag, but with -outfmt 7 it writes a
         "# Query: ..." line to the output file the moment each query
         finishes - so the growing output file itself is the progress
