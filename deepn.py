@@ -746,6 +746,14 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self._viewer_processes.pop(button, None)
 
     def _viewer_prereq_met(self, button):
+        if button is self.stat_maker_btn:
+            # Stat Maker needs nothing from DEEPN's selected library/folder,
+            # so it's the only one that doesn't depend on self.directory -
+            # check it first, before self.directory is used below (None
+            # until a folder is selected, e.g. at __init__ time).
+            return True
+        if self.directory is None:
+            return False
         if button is self.query_blast_btn or button is self.fragfinder_btn:
             return os.path.exists(os.path.join(self.directory, 'blast_results_query')) and \
                 len(self.fileio.get_file_list(self.directory, 'blast_results_query', '.bqp')) > 0
@@ -753,12 +761,6 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             return os.path.exists(os.path.join(self.directory, 'gene_count_summary')) and \
                 (len(self.fileio.get_file_list(self.directory, 'mapped_sam_files', '.sam')) > 0 or
                  len(self.fileio.get_file_list(self.directory, 'sam_files', '.sam')) > 0)
-        if button is self.stat_maker_btn:
-            # Stat Maker needs nothing from DEEPN's selected library/folder -
-            # it does its own folder and dataset selection internally, so
-            # it's available any time (still gated behind "not processing_busy"
-            # by the caller, same as every other viewer tool).
-            return True
         return False
 
     def _update_viewer_buttons_enabled(self):
