@@ -442,6 +442,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
     def monitor_directory_for_changes(self):
         def enable_buttons():
             self.junction_sequence_txt.setEnabled(True)
+            self.junction_sequence_3p_txt.setEnabled(True)
             self.exclude_sequence_txt.setEnabled(True)
             self.gene_count_btn.setEnabled(True)
             junction_ok = self.junction_prereqs_met()

@@ -127,8 +127,23 @@ class junctionf():
                                   '-outfmt', '7', '-out', output_file, '-evalue', '0.2', '-max_target_seqs', '10']
 
             sys.stdout.flush()
-            self.blast_pipe = subprocess.Popen(blast_command_list, shell=False)
-            self.blast_pipe.wait()
+            self.blast_pipe = subprocess.Popen(blast_command_list, shell=False, stderr=subprocess.PIPE)
+            _, stderr_output = self.blast_pipe.communicate()
+            return_code = self.blast_pipe.returncode
+            if return_code != 0 or not os.path.exists(output_file):
+                # A failed blastn used to go unnoticed: nothing checked its
+                # exit code (or captured its stderr), and
+                # generate_tabulated_blast_results() deletes the source .fa
+                # afterward regardless of whether a matching .blast.txt
+                # actually got written - so a silent blastn crash meant
+                # losing the .fa with no .blast.txt to show for it and no
+                # error anywhere. Raising here stops the run before that
+                # cleanup step and surfaces the failure, with blastn's own
+                # error text, via junction_make_gui.py's excepthook
+                # (junction_make_error.log in the work folder).
+                raise RuntimeError(
+                    "blastn failed (exit code %s) for %s. %s was not written.\nblastn stderr:\n%s" %
+                    (return_code, file_name, output_file, stderr_output.decode('utf-8', errors='replace')))
 
     def generate_tabulated_blast_results(self, directory, blast_results_folder, blast_results_query_folder, gene_list_file, prefix):
         blast_list = [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".txt") if f.startswith(prefix)]
