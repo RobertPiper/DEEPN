@@ -4,3 +4,8 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Exceed GitHub's 100MB per-file push limit - see README.md "Missing data
+# files" for where to download them (a Release asset, not tracked in git).
+lists/hg38GeneList.prn
+lists/mm10GeneList.prn
