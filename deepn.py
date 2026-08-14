@@ -671,7 +671,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         return True
 
     def stdout_ready(self):
-        text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace').strip()
+        text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='replace')
         self.append(text)
 
     def stderr_ready(self):
@@ -680,18 +680,32 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
 
     def append(self, text):
         self.status_bar.showMessage("Running %s script...  %s" % (self.clicked_button_text, next(self.bar)))
-        cursor = self.status_text.textCursor()
-        if self.start_match.match(text):
-            cursor.select(QtGui.QTextCursor.LineUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
-            cursor.movePosition(QtGui.QTextCursor.EndOfLine)
-            cursor.insertText(text + "\n\n")
-        else:
-            cursor.select(QtGui.QTextCursor.LineUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
-            cursor.insertText(text)
+        # blastn/junction-search progress writes a bare \r (no trailing \n)
+        # to update the current line in place - see the write-side comment
+        # in functions/junctionf_gui.py. But readAllStandardOutput() can
+        # coalesce several of those \r-terminated writes into a single
+        # chunk here, depending on OS/Qt pipe-buffering timing that varies
+        # by machine (confirmed live: the same code showed one line
+        # updating in place on one Mac, but a new line per update on
+        # another) - so each \r- or \n-delimited piece of the chunk has to
+        # go through the new-line-vs-overwrite-in-place logic separately,
+        # in order, instead of the whole chunk being inserted as one blob.
+        for line in re.split(r'[\r\n]+', text):
+            line = line.strip()
+            if not line:
+                continue
+            cursor = self.status_text.textCursor()
+            if self.start_match.match(line):
+                cursor.select(QtGui.QTextCursor.LineUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+                cursor.movePosition(QtGui.QTextCursor.EndOfLine)
+                cursor.insertText(line + "\n\n")
+            else:
+                cursor.select(QtGui.QTextCursor.LineUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+                cursor.insertText(line)
         self.status_text.ensureCursorVisible()
 
     def disable_unused_buttons(self):
