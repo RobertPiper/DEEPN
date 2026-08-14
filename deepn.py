@@ -338,6 +338,19 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
     def __init__(self, *args):
         super(DEEPN_Launcher, self).__init__(*args)
         self.setupUi(self)
+        # Gene Count prints a new paragraph per chromosome per file (all its
+        # messages start with ">>> ", so append() always takes the new-line
+        # path, never the overwrite-in-place one - unlike junction search/
+        # BLAST/parsing, which use \r for exactly this reason). With several
+        # files running in parallel through a full ~200-500 contig hg38
+        # chromosome list, that's thousands of paragraph inserts into a
+        # QPlainTextEdit with no size cap, each doing a full cursor
+        # select/delete/insert plus ensureCursorVisible() - reported live as
+        # the status box eventually stopping updating on a longer real run.
+        # Capping it keeps rendering cost bounded regardless of run length,
+        # without reducing detail - old lines just drop off, not this run's
+        # recent ones.
+        self.status_text.setMaximumBlockCount(5000)
         self._existing_folders_found.connect(self._on_existing_folders_found)
         self._pending_check_done_callback = None
         self._caffeinate = None
