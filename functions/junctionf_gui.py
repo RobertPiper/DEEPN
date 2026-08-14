@@ -234,8 +234,15 @@ class junctionf():
 
         for blasttxt in blast_list:
             print(">>> Parsing BLAST results file %s ..." % blasttxt)
+            # The corresponding .fa file (still present - cleanup only runs
+            # after every direction's parsing is done, see
+            # cleanup_junction_fa_files()) gives an exact total for a
+            # progress ETA, the same way blast_search() gets one.
+            fa_path = os.path.join(directory, blast_results_folder,
+                                   blasttxt.replace(".blast.txt", ".junctions.fa"))
+            total_sequences = self._count_fasta_sequences(fa_path) if os.path.exists(fa_path) else None
             blast_dict, gene_dict = self._blast_parser(directory, blast_results_folder,
-                                                       blasttxt, gene_list)
+                                                       blasttxt, gene_list, total_sequences)
             for gene in list(blast_dict.keys()):
                 if gene not in ['total', 'pos_que']:
                     stats = {'in_orf'  : 0, 'in_frame': 0, 'downstream': 0,
@@ -339,10 +346,9 @@ class junctionf():
                                    }
         return gene_list
 
-    def _blast_parser(self, directory, infolder, fileName, gene_list):
+    def _blast_parser(self, directory, infolder, fileName, gene_list, total_sequences=None):
         blast_results_handle = open(os.path.join(directory, infolder, fileName), 'r')
         blast_results_count = 0
-        print_counter = 0
         previous_bitscore = 0
         # Junctions are collected in a dict keyed by (position, query_start)
         # during parsing so a repeat hit is an O(1) lookup instead of an O(n)
@@ -352,16 +358,32 @@ class junctionf():
         junction_lookup = {}
         gene_dict = {}
         collect_results = 'n'
+        checkpoint = 10000
+        last_checkpoint_count = 0
+        last_checkpoint_time = time.time()
+        printed_progress = False
         for line in blast_results_handle.readlines():
             line.strip()
             split = line.split()
             if "BLASTN" in line:
                 blast_results_count += 1
-                print_counter += 1
                 previous_bitscore = 0
-                if print_counter == 90000:
-                    sys.stdout.write('.')
-                    print_counter = 0
+                if total_sequences and blast_results_count - last_checkpoint_count >= checkpoint:
+                    now = time.time()
+                    elapsed = now - last_checkpoint_time
+                    done_this_round = blast_results_count - last_checkpoint_count
+                    rate = done_this_round / elapsed if elapsed > 0 else 0
+                    remaining = max(0, total_sequences - blast_results_count)
+                    eta_minutes = (remaining / rate / 60.0) if rate > 0 else 0
+                    pct = blast_results_count * 100.0 / total_sequences
+                    # Same \r-in-place convention as blastn's own progress
+                    # line - see the matching comment in _monitor_blast_progress.
+                    sys.stdout.write('\rParsing progress: %d / %d sequences (%.0f%%) - last %d took %.0fs, ~%.1f min remaining' %
+                         (blast_results_count, total_sequences, pct, done_this_round, elapsed, eta_minutes))
+                    sys.stdout.flush()
+                    last_checkpoint_count = blast_results_count
+                    last_checkpoint_time = now
+                    printed_progress = True
             elif "hits" in line and int(split[1]) < 100:
                 collect_results = 'y'
             elif split[0] != '#' and collect_results == 'y' and float(split[2]) > 98 and \
@@ -414,6 +436,8 @@ class junctionf():
             else:
                 collect_results = 'n'
         blast_results_handle.close()
+        if printed_progress:
+            print(' ')  # terminate the \r-updating progress line above
 
         results_dictionary = {}
         for gene_name, transcripts in junction_lookup.items():
