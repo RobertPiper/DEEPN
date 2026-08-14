@@ -212,7 +212,7 @@ class junctionf():
             if return_code != 0 or not os.path.exists(output_file):
                 # A failed blastn used to go unnoticed: nothing checked its
                 # exit code (or captured its stderr), and
-                # generate_tabulated_blast_results() deletes the source .fa
+                # cleanup_junction_fa_files() deletes the source .fa
                 # afterward regardless of whether a matching .blast.txt
                 # actually got written - so a silent blastn crash meant
                 # losing the .fa with no .blast.txt to show for it and no
@@ -256,6 +256,12 @@ class junctionf():
                                               blasttxt.replace(".blast.txt", ".bqp")), "wb")
             pickle.dump(blast_dict, blast_query_p)
             blast_query_p.close()
+
+    def cleanup_junction_fa_files(self, directory, blast_results_folder, prefix):
+        # Split out from generate_tabulated_blast_results() so BLAST, parsing,
+        # and cleanup can each run as their own complete pass across every
+        # enabled direction (5p and 3p), instead of blasting+parsing+cleaning
+        # up one direction fully before starting the next.
         self.fileio.remove_file(directory, blast_results_folder,
                                 [f for f in self.fileio.get_file_list(directory, blast_results_folder, ".fa") if f.startswith(prefix)])
 

@@ -113,20 +113,39 @@ if __name__ == '__main__':
         junctionf.junction_search(main_directory, junction_folder, input_data_folder, blast_results_folder,
                                  blast_results_query, junction_sequence_3p, exclusion_sequence, '3p_')
 
+    # Same idea as the junction-search phase above: BLAST every enabled
+    # direction's .fa files first, then parse every direction's .blast.txt
+    # results, then clean up every direction's .fa files - three complete
+    # passes, not blast+parse+cleanup done fully for one direction before
+    # the next starts.
     if blast_5p:
         sys.stdout.write("\n>>> Running 5' BLAST search...\n")
         sys.stdout.flush()
         junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '5p_')
+
+    if blast_3p and junction_sequence_3p:
+        sys.stdout.write("\n>>> Running 3' BLAST search...\n")
+        sys.stdout.flush()
+        junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '3p_')
+
+    if blast_5p:
+        sys.stdout.write("\n>>> Parsing 5' BLAST results...\n")
+        sys.stdout.flush()
         junctionf.generate_tabulated_blast_results(main_directory,
                                                    blast_results_folder,
                                                    blast_results_query,
                                                    gene_list_file, '5p_')
 
     if blast_3p and junction_sequence_3p:
-        sys.stdout.write("\n>>> Running 3' BLAST search...\n")
+        sys.stdout.write("\n>>> Parsing 3' BLAST results...\n")
         sys.stdout.flush()
-        junctionf.blast_search(main_directory, blast_db_name, blast_results_folder, blast_results_query, '3p_')
         junctionf.generate_tabulated_blast_results(main_directory,
                                                    blast_results_folder,
                                                    blast_results_query,
                                                    gene_list_file, '3p_')
+
+    if blast_5p:
+        junctionf.cleanup_junction_fa_files(main_directory, blast_results_folder, '5p_')
+
+    if blast_3p and junction_sequence_3p:
+        junctionf.cleanup_junction_fa_files(main_directory, blast_results_folder, '3p_')
