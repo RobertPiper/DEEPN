@@ -1,21 +1,33 @@
-"""
-py2app setup script for DEEPN_26v5 (Python 3 / PyQt5 / native Apple Silicon port).
+r"""
+py2app setup script for DEEPN_26v6 (Python 3 / PyQt5 / native Apple Silicon port).
 
 Builds one app bundle containing:
-  - deepn.py             (main launcher, Contents/MacOS/DEEPN_26v5)
+  - deepn.py             (main launcher, Contents/MacOS/DEEPN_26v6)
   - gene_count_gui.py     \
   - junction_make_gui.py   \
-  - gc_jm.py                \  extra_scripts: separate executables in
-  - query_blast_gui.py      \  Contents/MacOS/, sharing the same embedded
-  - read_depth_gui_v2.py     /  Python runtime as the main app.
-  - fragfinder_gui.py       /
-  - stat_maker_gui_v2.py   /
+  - gc_jm.py                \
+  - mapster_gc_jm.py         \  extra_scripts: separate executables in
+  - query_blast_gui.py        \  Contents/MacOS/, sharing the same embedded
+  - read_depth_gui_v2.py       /  Python runtime as the main app.
+  - fragfinder_gui.py         /
+  - stat_maker_gui_v2.py     /
 
 Stat Maker needs no state from DEEPN's own database (it does its own
 folder/dataset selection internally), so it's bundled here as a launcher
 module *and* still built separately as its own standalone app via
 setup_statmaker26.py - same script, two independent builds, no shared
 state between them.
+
+mapster_gc_jm.py chains a bundled, self-contained copy of MAPster (built
+separately - see LOCAL_MAPster/build_mapster.sh - and copied into
+Contents/Resources/mapster/MAPster.app by build_deepn26.sh, since a nested
+.app with its own Qt .framework symlink structure needs cp -R, not
+py2app's data_files) into Gene Count then Junction Make, for the new
+MAP+GC+JM button. MAPster's own genome selection and output folder are
+pre-set from whatever library is selected in DEEPN before launch (see
+_write_mapster_config() in deepn.py); everything else about running it -
+picking input files, naming outputs, clicking Run - stays exactly as
+manual as standalone MAPster already is.
 
 Usage:
     python3 setup_deepn26.py py2app
@@ -24,12 +36,13 @@ import os
 import glob
 from setuptools import setup
 
-APP_NAME = 'DEEPN_26v5'
+APP_NAME = 'DEEPN_26v6'
 
 EXTRA_SCRIPTS = [
     'gene_count_gui.py',
     'junction_make_gui.py',
     'gc_jm.py',
+    'mapster_gc_jm.py',
     'query_blast_gui.py',
     'read_depth_gui_v2.py',
     'fragfinder_gui.py',

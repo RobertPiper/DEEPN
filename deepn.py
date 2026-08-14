@@ -7,6 +7,7 @@ if '.app/Contents/MacOS' in sys.executable:
 
 import re
 import time
+import json
 import threading
 import itertools
 import functions.db as db
@@ -34,6 +35,27 @@ def script_path(name):
     if FROZEN:
         return os.path.join(MACOS_DIR, os.path.splitext(name)[0])
     return os.path.join(SCRIPT_DIR, name)
+
+def mapster_path():
+    if FROZEN:
+        return os.path.join(MACOS_DIR, '..', 'Resources', 'mapster', 'MAPster.app',
+                            'Contents', 'MacOS', 'MAPster')
+    return '/Users/robertpiper2/LOCAL_MAPster/MAPster.app/Contents/MacOS/MAPster'
+
+# DEEPN's own genome table (DEEPN_db.sqlite3, `genome`) has 5 selectable
+# library entries but only references 3 distinct underlying genomes -
+# library and reference genome aren't the same thing (two entries share
+# hg38, two share SacCer3). Keyed by blast_db (row[6], already tracked as
+# self.blast_db_name on selection) since it's a reliable 1:1 proxy for the
+# underlying genome, unlike the free-text library display name. Values are
+# MAPster's own genome_list.xml <internalname> for the matching entry -
+# confirmed present there for all three, nothing needed on MAPster's side
+# to support any of them.
+MAPSTER_GENOME_BY_BLAST_DB = {
+    'hg38NMgenes.db': 'hg38/genome',
+    'sacCer3.db': 'sc3/genome',
+    'mm10mRNAnoSuffix.fa': 'mm10/genome',
+}
 
 INFO_TEXT = """DEEPN - LAUNCHER INFO
 
@@ -576,16 +598,22 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             junction_ok = self.junction_prereqs_met()
             self.junction_make_btn.setEnabled(junction_ok)
             self.gene_count_junction_make_btn.setEnabled(junction_ok)
+            self.mapster_gc_jm_btn.setEnabled(junction_ok)
             self.db_list_wgt.setEnabled(True)
             self.status_txt.setText(self.directory)
 
         while self.proceed == 1:
+            # MAPster is what *creates* .sam files, so - unlike Gene Count/
+            # Junction Make/GC+JM below - it and the combined MAP+GC+JM
+            # button don't wait on .sam files already being present.
+            self.mapster_btn.setEnabled(True)
             if len(self.fileio.get_file_list(self.directory, 'sam_files', '.sam')) == 0:
                 if len(self.fileio.get_file_list(self.directory, 'mapped_sam_files', '.sam')) <= 0 or \
                         len(self.fileio.get_file_list(self.directory, 'unmapped_sam_files', '.sam')) <= 0:
                     self.gene_count_btn.setEnabled(False)
                     self.junction_make_btn.setEnabled(False)
                     self.gene_count_junction_make_btn.setEnabled(False)
+                    self.mapster_gc_jm_btn.setEnabled(self.junction_prereqs_met())
                     self.status_txt.setText('Waiting to load .sam files into selected directory...')
                 else:
                     self.combined = 0
@@ -606,6 +634,8 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.gene_count_btn.setText("Gene Count")
             self.junction_make_btn.setText("Junction Make")
             self.gene_count_junction_make_btn.setText("Gene Count + Junction Make")
+            self.mapster_btn.setText("MAPster")
+            self.mapster_gc_jm_btn.setText("MAP + GC + JM")
             for btn in self.viewer_buttons:
                 if btn not in self._viewer_processes:
                     btn.setText(self._viewer_button_labels[btn])
@@ -765,6 +795,31 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         time.sleep(1)
         os.system('kill $(ps aux | awk \'/' + name + '/ {print $2}\')')
 
+    def _write_mapster_config(self):
+        """Builds the JSON config MAPster reads on launch when started from
+        DEEPN (see load_deepn_config_if_present() in LOCAL_MAPster's
+        mainwindow.cpp): which genome to pre-select and lock the dropdown
+        to, and where to point its output folder. Returns the config path,
+        or None (after showing a message) if the currently selected
+        library's blast_db isn't one of the 3 genomes MAPster is set up
+        for - see MAPSTER_GENOME_BY_BLAST_DB above."""
+        genome_internal_name = MAPSTER_GENOME_BY_BLAST_DB.get(self.blast_db_name)
+        if genome_internal_name is None:
+            QtWidgets.QMessageBox.warning(
+                self, "MAPster",
+                "The selected library's genome (%s) isn't one MAPster is "
+                "set up for in DEEPN mode. Select a library using hg38, "
+                "SacCer3, or mm10 first." % self.blast_db_name)
+            return None
+        config = {
+            'genome_internal_name': genome_internal_name,
+            'output_dir': os.path.join(self.directory, 'sam_files'),
+        }
+        config_path = os.path.join(self.directory, 'mapster_deepn_config.json')
+        with open(config_path, 'w') as config_file:
+            json.dump(config, config_file)
+        return config_path
+
     @QtCore.pyqtSlot()
     def on_prompt_box_stateChanged(self):
         self.prompt = self.prompt_box.checkState()
@@ -851,6 +906,63 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
                                 str(int(self.blast_5p_box.isChecked())),
                                 str(int(self.blast_3p_box.isChecked()))]
                     self.process.start(script_path('gc_jm.py'), arguments)
+                else:
+                    self.process_finished()
+            if self.prompt == 2:
+                self._check_path_async(['junction_files', 'blast_results',
+                                        'blast_results_query', 'gene_count_summary',
+                                        'chromosome_files'], start)
+            else:
+                start()
+        elif self.clicked_button == self.sender():
+            self._abort_clicked('gene_count_gui.py')
+
+    @QtCore.pyqtSlot()
+    def on_mapster_btn_clicked(self):
+        if self.clicked_button is None:
+            self.clicked_button = self.sender()
+            self.clicked_button_text = self.clicked_button.text()
+            self.proceed = 0
+            self.disable_unused_buttons()
+            config_path = self._write_mapster_config()
+            if config_path is None:
+                self.process_finished()
+                return
+            self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+            self.process.start(mapster_path(), [config_path])
+        elif self.clicked_button == self.sender():
+            self._abort_clicked()
+
+    @QtCore.pyqtSlot()
+    def on_mapster_gc_jm_btn_clicked(self):
+        if self.clicked_button is None:
+            self.clicked_button = self.sender()
+            self.clicked_button_text = self.clicked_button.text()
+            # See the matching comment in on_gene_count_btn_clicked.
+            self.proceed = 0
+            self.disable_unused_buttons()
+            def start():
+                if self.quit == False:
+                    config_path = self._write_mapster_config()
+                    if config_path is None:
+                        self.process_finished()
+                        return
+                    self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+                    arguments = [self.directory,
+                                mapster_path(),
+                                config_path,
+                                self.gene_dictionary, self.chromosome_list,
+                                str(self.junction_sequence_txt.text()),
+                                str(self.exclude_sequence_txt.text()),
+                                self.blast_db_name,
+                                script_path('gene_count_gui.py'),
+                                script_path('junction_make_gui.py'),
+                                self.gene_list_file,
+                                str(self.combined),
+                                str(self.junction_sequence_3p_txt.text()),
+                                str(int(self.blast_5p_box.isChecked())),
+                                str(int(self.blast_3p_box.isChecked()))]
+                    self.process.start(script_path('mapster_gc_jm.py'), arguments)
                 else:
                     self.process_finished()
             if self.prompt == 2:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds DEEPN_26v5.app end to end: py2app, then two post-build fixes py2app
+# Builds DEEPN_26v6.app end to end: py2app, then two post-build fixes py2app
 # doesn't handle correctly on its own, then codesigning and verification.
 #
 # Usage:
@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="dist/DEEPN_26v5.app"
+APP="dist/DEEPN_26v6.app"
 
 echo ">>> Cleaning previous build..."
 rm -rf "$APP"
@@ -148,6 +148,20 @@ for d in sorted(seen):
 
 print("    Fixed %d dylib(s) with unresolvable @rpath dependencies (redirected rpath, added soname symlinks)." % fixed)
 PYEOF
+
+echo ">>> Bundling MAPster..."
+echo "    A nested .app with its own Qt .framework bundles has Versions/Current"
+echo "    style symlinks that a naive per-file copy (py2app's data_files, or a"
+echo "    plain Python file-walk) would break - cp -R preserves them correctly,"
+echo "    so this is a straight directory copy, not routed through py2app."
+MAPSTER_SRC="/Users/robertpiper2/LOCAL_MAPster/MAPster.app"
+if [ ! -d "$MAPSTER_SRC" ]; then
+    echo "ERROR: $MAPSTER_SRC not found - run LOCAL_MAPster/build_mapster.sh first" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Resources/mapster"
+rm -rf "$APP/Contents/Resources/mapster/MAPster.app"
+cp -R "$MAPSTER_SRC" "$APP/Contents/Resources/mapster/MAPster.app"
 
 echo ">>> Codesigning..."
 codesign --deep --force --sign - "$APP"

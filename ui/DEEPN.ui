@@ -352,6 +352,18 @@
      <item>
       <layout class="QHBoxLayout" name="process_data_layout_2">
        <item>
+        <widget class="QPushButton" name="mapster_btn">
+         <property name="font">
+          <font>
+           <pointsize>14</pointsize>
+          </font>
+         </property>
+         <property name="text">
+          <string>MAPster</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="gene_count_btn">
          <property name="font">
           <font>
@@ -379,6 +391,21 @@
      </item>
      <item>
       <layout class="QHBoxLayout" name="process_data_layout_1">
+       <item>
+        <widget class="QPushButton" name="mapster_gc_jm_btn">
+         <property name="font">
+          <font>
+           <pointsize>14</pointsize>
+           <weight>50</weight>
+           <bold>false</bold>
+           <strikeout>false</strikeout>
+          </font>
+         </property>
+         <property name="text">
+          <string>MAP + GC + JM</string>
+         </property>
+        </widget>
+       </item>
        <item>
         <widget class="QPushButton" name="gene_count_junction_make_btn">
          <property name="font">
@@ -614,6 +641,8 @@
   <widget class="QStatusBar" name="status_bar"/>
  </widget>
  <tabstops>
+  <tabstop>mapster_btn</tabstop>
+  <tabstop>mapster_gc_jm_btn</tabstop>
   <tabstop>gene_count_junction_make_btn</tabstop>
   <tabstop>query_blast_btn</tabstop>
   <tabstop>read_depth_btn</tabstop>
