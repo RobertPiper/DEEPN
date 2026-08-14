@@ -367,8 +367,16 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.window.setGeometry(10, 30, self.width(), self.height())
         self.buttons = []
         self.thread = None
-        self.message = m.Message_Dialog()
-        self.comment = m.Message_Dialog()
+        # Message_Dialog sets Qt.WindowModal, which needs a parent to be
+        # modal relative to - without one, macOS can't attach it as a
+        # proper sheet/child window, which plausibly explains a hang seen
+        # live: the dialog painted and was visible, but the process's own
+        # event loop sat 100% idle in mach_msg2_trap (confirmed via
+        # `sample`) - it was never actually receiving click events for
+        # this window at all, only native window-manager-level actions
+        # (the close button) worked.
+        self.message = m.Message_Dialog(self)
+        self.comment = m.Message_Dialog(self)
         self.quit = False
         for layout in self._layouts:
             widgets = (layout.itemAt(i).widget() for i in range(layout.count()))
