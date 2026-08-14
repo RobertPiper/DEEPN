@@ -367,16 +367,19 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.window.setGeometry(10, 30, self.width(), self.height())
         self.buttons = []
         self.thread = None
-        # Message_Dialog sets Qt.WindowModal, which needs a parent to be
-        # modal relative to - without one, macOS can't attach it as a
-        # proper sheet/child window, which plausibly explains a hang seen
-        # live: the dialog painted and was visible, but the process's own
-        # event loop sat 100% idle in mach_msg2_trap (confirmed via
-        # `sample`) - it was never actually receiving click events for
-        # this window at all, only native window-manager-level actions
-        # (the close button) worked.
-        self.message = m.Message_Dialog(self)
-        self.comment = m.Message_Dialog(self)
+        self.message = m.Message_Dialog()
+        # Continue/Quit don't reliably receive clicks on this dialog - a
+        # live test confirmed the process's own event loop sits 100% idle
+        # while it's up, so those clicks are never actually arriving. Only
+        # the native close button (window-manager level, not a Qt click)
+        # and the main window's own Abort button work. Hiding these instead
+        # of chasing the underlying cause further: close the window to
+        # continue, or use Abort on the main window to cancel - both
+        # already work reliably. self.comment (shown via .show(), not
+        # .exec_()) doesn't have this problem and keeps its buttons.
+        self.message.quit_btn.hide()
+        self.message.continue_btn.hide()
+        self.comment = m.Message_Dialog()
         self.quit = False
         for layout in self._layouts:
             widgets = (layout.itemAt(i).widget() for i in range(layout.count()))
@@ -495,9 +498,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
                 message += "<br>%d.<b>%s</b><br>" % (count, d)
                 count += 1
             message += "<br><br>These folders and/or their contexts can be moved to avoid risk of being over-written"
+            message += "<br><br>Close this window (upper left) to continue, or click Abort in the main window to cancel."
             self.message.windowTitle('Warning!')
             self.message.showMessage('<b>WARNING</b><br><br>%s<br>' % message)
-            self.message.continue_btn.setEnabled(True)
             # raise_()/activateWindow() must run BEFORE exec_() - exec_()
             # blocks until the dialog closes, so calling them after (as this
             # used to) is a no-op. Showing the dialog synchronously from a
@@ -707,6 +710,28 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.proceed = 1
         threading.Thread(target=self.monitor_directory_for_changes, daemon=True).start()
 
+    def _abort_clicked(self, kill_process_name=None):
+        """Handles clicking the same processing button again (now showing
+        "Abort"). If the actual QProcess is already running, terminate it
+        as before. But it can also be clicked while check_path()'s warning
+        dialog is still up and self.process was never started (Continue/
+        Quit don't reliably receive clicks there - see check_path() - so
+        this is the main way to cancel at that point). In that case,
+        terminate() on a NotRunning QProcess would be a silent no-op and
+        the pending start() callback would still fire once the dialog is
+        eventually closed, launching the job anyway despite Abort having
+        been clicked - so cancel the pending callback and close the dialog
+        instead."""
+        if self.process.state() != QtCore.QProcess.NotRunning:
+            self.process.terminate()
+            if kill_process_name:
+                self.kill_processes(kill_process_name)
+        else:
+            self._pending_check_done_callback = None
+            if self.message.isVisible():
+                self.message.close()
+            self.process_finished()
+
     def on_about_to_quit(self):
         # Without this, quitting DEEPN mid-run leaves whatever it launched
         # (Gene Count/Junction Make/GC+JM, or any open viewer tool) running
@@ -761,8 +786,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             else:
                 start()
         elif self.clicked_button == self.sender():
-            self.process.terminate()
-            self.kill_processes('gene_count_gui.py')
+            self._abort_clicked('gene_count_gui.py')
 
     @QtCore.pyqtSlot()
     def on_junction_make_btn_clicked(self):
@@ -788,7 +812,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             else:
                 start()
         elif self.clicked_button == self.sender():
-            self.process.terminate()
+            self._abort_clicked()
 
     @QtCore.pyqtSlot()
     def on_gene_count_junction_make_btn_clicked(self):
@@ -823,8 +847,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             else:
                 start()
         elif self.clicked_button == self.sender():
-            self.process.terminate()
-            self.kill_processes('gene_count_gui.py')
+            self._abort_clicked('gene_count_gui.py')
 
     def _launch_viewer_tool(self, button, script, arguments):
         """Blast Query, Read Depth, and FragFinder each get their own QProcess
