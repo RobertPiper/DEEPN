@@ -284,27 +284,31 @@ class junctionf():
             return value
 
         reads_count = 0
+        total_reads_count = 0
         while True:
             line = input_filehandle.readline()
             if not line:
                 break
             line_split = line.strip().split()
-            if line_split[0][0] != "@" and line_split[2] == "*":
-                reads_count += 1
-                if reads_count % 5000 == 0:
-                    sys.stdout.write('\rRead %.3f%% of file...' % (input_filehandle.tell() * 100.0 / input_file_size))
-                    sys.stdout.flush()
-                sequence_read = line_split[9]
-                rev_sequence_read = self.process.reverse_complement(sequence_read)
-                fwd_indexes = self._junctions_in_read(sequence_read, jseqs)
-                hit = check_matching_criteria(line_split, fwd_indexes, jseqs, sequence_read)
-                if hit == 0:
-                    rev_indexes = self._junctions_in_read(rev_sequence_read, jseqs)
-                    hit = check_matching_criteria(line_split, rev_indexes, jseqs, rev_sequence_read)
-                hits_count += hit
+            if line_split[0][0] != "@":
+                total_reads_count += 1
+                if line_split[2] == "*":
+                    reads_count += 1
+                    if reads_count % 5000 == 0:
+                        sys.stdout.write('\rRead %.3f%% of file...' % (input_filehandle.tell() * 100.0 / input_file_size))
+                        sys.stdout.flush()
+                    sequence_read = line_split[9]
+                    rev_sequence_read = self.process.reverse_complement(sequence_read)
+                    fwd_indexes = self._junctions_in_read(sequence_read, jseqs)
+                    hit = check_matching_criteria(line_split, fwd_indexes, jseqs, sequence_read)
+                    if hit == 0:
+                        rev_indexes = self._junctions_in_read(rev_sequence_read, jseqs)
+                        hit = check_matching_criteria(line_split, rev_indexes, jseqs, rev_sequence_read)
+                    hits_count += hit
 
         print(' ')  # terminate the \r-updating "Read X% of file..." line above
-        print(">>> Found %d junctions in %d number of reads" % (hits_count, reads_count))
+        print(">>> Found %d junctions in %d unmapped reads (%d total reads scanned)" %
+             (hits_count, reads_count, total_reads_count))
         sys.stdout.flush()
 
     def _make_search_junctions(self, junctions_array):

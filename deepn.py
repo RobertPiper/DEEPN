@@ -327,9 +327,18 @@ class vQlistWidgetItem(QtWidgets.QListWidgetItem):
         self.data = data
 
 class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
+    # Emitted from a background thread once check_path()'s os.path.exists()
+    # checks finish - PyQt signals are safe to emit cross-thread, and
+    # auto-marshal the connected slot call onto the receiver's own thread
+    # (the main thread here), unlike calling widget methods directly from a
+    # thread the way monitor_directory_for_changes() does.
+    _existing_folders_found = QtCore.pyqtSignal(list)
+
     def __init__(self, *args):
         super(DEEPN_Launcher, self).__init__(*args)
         self.setupUi(self)
+        self._existing_folders_found.connect(self._on_existing_folders_found)
+        self._pending_check_done_callback = None
         self.proceed = 1
         self.prompt = 2
         self.fileio = f.fileio()
@@ -455,11 +464,20 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         else:
             os.makedirs(os.path.join(self.directory, 'sam_files'))
 
-    def check_path(self, root, folders):
-        existing_directories = []
-        for dir in folders:
-            if os.path.exists(os.path.join(root, dir)):
-                existing_directories.append(dir)
+    def _existing_folders(self, root, folders):
+        # The actual os.path.exists() calls, pulled out of check_path() so
+        # they can run on a background thread - on a slow/idle external or
+        # network volume, each one is a real filesystem round-trip and a
+        # handful of them run back-to-back was blocking the main thread
+        # (and therefore the whole GUI, including the warning dialog this
+        # feeds into) for several seconds, confirmed via a live test.
+        return [d for d in folders if os.path.exists(os.path.join(root, d))]
+
+    def check_path(self, existing_directories):
+        # Must run on the main thread - self.message.exec_() starts its own
+        # nested event loop. Takes an already-computed list; see
+        # _check_path_async()/_on_existing_folders_found() for how callers
+        # get here without blocking on the existence checks themselves.
         if len(existing_directories) > 0:
             message = "One or more of the following folders is already present:<br>"
             count = 1
@@ -472,6 +490,24 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.message.continue_btn.setEnabled(True)
             self.message.exec_()
             self.message.activateWindow()
+
+    def _check_path_async(self, folders, on_done):
+        """Runs _existing_folders() on a background thread, then shows
+        check_path()'s warning dialog (if needed) and calls on_done() -
+        both back on the main thread, via _existing_folders_found - once
+        the check completes."""
+        self._pending_check_done_callback = on_done
+        directory = self.directory
+        def worker():
+            self._existing_folders_found.emit(self._existing_folders(directory, folders))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_existing_folders_found(self, existing_directories):
+        self.check_path(existing_directories)
+        callback = self._pending_check_done_callback
+        self._pending_check_done_callback = None
+        if callback:
+            callback()
 
     def print_comment(self, tag):
         text = self.printio.get_text_block(tag)
@@ -667,14 +703,17 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             # unresponsive with a spinning cursor.
             self.proceed = 0
             self.disable_unused_buttons()
+            def start():
+                if self.quit == False:
+                    self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+                    arguments = [self.directory, self.gene_dictionary, self.chromosome_list, str(self.combined)]
+                    self.process.start(script_path('gene_count_gui.py'), arguments)
+                else:
+                    self.process_finished()
             if self.prompt == 2:
-                self.check_path(self.directory, ['gene_count_summary', 'chromosome_files'])
-            if self.quit == False:
-                self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-                arguments = [self.directory, self.gene_dictionary, self.chromosome_list, str(self.combined)]
-                self.process.start(script_path('gene_count_gui.py'), arguments)
+                self._check_path_async(['gene_count_summary', 'chromosome_files'], start)
             else:
-                self.process_finished()
+                start()
         elif self.clicked_button == self.sender():
             self.process.terminate()
             self.kill_processes('gene_count_gui.py')
@@ -687,18 +726,21 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             # See the matching comment in on_gene_count_btn_clicked.
             self.proceed = 0
             self.disable_unused_buttons()
+            def start():
+                if self.quit == False:
+                    self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+                    arguments = [self.directory, str(self.junction_sequence_txt.text()),
+                                 str(self.exclude_sequence_txt.text()), self.blast_db_name, self.gene_list_file, str(self.combined),
+                                 str(self.junction_sequence_3p_txt.text()),
+                                 str(int(self.blast_5p_box.isChecked())),
+                                 str(int(self.blast_3p_box.isChecked()))]
+                    self.process.start(script_path('junction_make_gui.py'), arguments)
+                else:
+                    self.process_finished()
             if self.prompt == 2:
-                self.check_path(self.directory, ['junction_files', 'blast_results', 'blast_results_query'])
-            if self.quit == False:
-                self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-                arguments = [self.directory, str(self.junction_sequence_txt.text()),
-                             str(self.exclude_sequence_txt.text()), self.blast_db_name, self.gene_list_file, str(self.combined),
-                             str(self.junction_sequence_3p_txt.text()),
-                             str(int(self.blast_5p_box.isChecked())),
-                             str(int(self.blast_3p_box.isChecked()))]
-                self.process.start(script_path('junction_make_gui.py'), arguments)
+                self._check_path_async(['junction_files', 'blast_results', 'blast_results_query'], start)
             else:
-                self.process_finished()
+                start()
         elif self.clicked_button == self.sender():
             self.process.terminate()
 
@@ -710,28 +752,30 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             # See the matching comment in on_gene_count_btn_clicked.
             self.proceed = 0
             self.disable_unused_buttons()
+            def start():
+                if self.quit == False:
+                    self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
+                    arguments = [self.directory,
+                                self.gene_dictionary, self.chromosome_list,
+                                str(self.junction_sequence_txt.text()),
+                                str(self.exclude_sequence_txt.text()),
+                                self.blast_db_name,
+                                script_path('gene_count_gui.py'),
+                                script_path('junction_make_gui.py'),
+                                self.gene_list_file,
+                                str(self.combined),
+                                str(self.junction_sequence_3p_txt.text()),
+                                str(int(self.blast_5p_box.isChecked())),
+                                str(int(self.blast_3p_box.isChecked()))]
+                    self.process.start(script_path('gc_jm.py'), arguments)
+                else:
+                    self.process_finished()
             if self.prompt == 2:
-                self.check_path(self.directory, ['junction_files', 'blast_results',
-                                                 'blast_results_query', 'gene_count_summary',
-                                                 'chromosome_files'])
-            if self.quit == False:
-                self.status_bar.showMessage("Running %s ..." % self.clicked_button_text)
-                arguments = [self.directory,
-                            self.gene_dictionary, self.chromosome_list,
-                            str(self.junction_sequence_txt.text()),
-                            str(self.exclude_sequence_txt.text()),
-                            self.blast_db_name,
-                            script_path('gene_count_gui.py'),
-                            script_path('junction_make_gui.py'),
-                            self.gene_list_file,
-                            str(self.combined),
-                            str(self.junction_sequence_3p_txt.text()),
-                            str(int(self.blast_5p_box.isChecked())),
-                            str(int(self.blast_3p_box.isChecked()))]
-
-                self.process.start(script_path('gc_jm.py'), arguments)
+                self._check_path_async(['junction_files', 'blast_results',
+                                        'blast_results_query', 'gene_count_summary',
+                                        'chromosome_files'], start)
             else:
-                self.process_finished()
+                start()
         elif self.clicked_button == self.sender():
             self.process.terminate()
             self.kill_processes('gene_count_gui.py')
