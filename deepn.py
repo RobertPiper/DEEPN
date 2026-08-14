@@ -490,8 +490,20 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             self.message.windowTitle('Warning!')
             self.message.showMessage('<b>WARNING</b><br><br>%s<br>' % message)
             self.message.continue_btn.setEnabled(True)
-            self.message.exec_()
+            # raise_()/activateWindow() must run BEFORE exec_() - exec_()
+            # blocks until the dialog closes, so calling them after (as this
+            # used to) is a no-op. Showing the dialog synchronously from a
+            # direct button-click handler let Qt/Cocoa activate the window
+            # automatically as a natural continuation of that click; showing
+            # it from _on_existing_folders_found() (a queued cross-thread
+            # signal, not a direct user gesture) loses that automatic
+            # activation - confirmed live: the dialog appeared with its
+            # traffic-light buttons hollow/gray (inactive window), and only
+            # the native close button (window-manager level) worked, not
+            # Continue (needs the window to actually be key to receive it).
+            self.message.raise_()
             self.message.activateWindow()
+            self.message.exec_()
 
     def _check_path_async(self, folders, on_done):
         """Runs _existing_folders() on a background thread, then shows
