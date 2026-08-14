@@ -1,5 +1,6 @@
 import sys
 import os
+import subprocess
 
 if '.app/Contents/MacOS' in sys.executable:
     os.chdir(os.path.join(os.path.dirname(sys.executable), '..', 'Resources'))
@@ -339,6 +340,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.setupUi(self)
         self._existing_folders_found.connect(self._on_existing_folders_found)
         self._pending_check_done_callback = None
+        self._caffeinate = None
         self.proceed = 1
         self.prompt = 2
         self.fileio = f.fileio()
@@ -652,8 +654,31 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.status_text.clear()
         self.proceed = 0
         self.disable_unused_buttons()
+        # A long BLAST run can take hours; if the Mac sleeps overnight, an
+        # open write handle to a file on an external/USB drive can be
+        # silently killed by the kernel with no crash report and no Python
+        # exception to catch - confirmed via `pmset -g log` after a real
+        # overnight run died mid-write: repeated "Maintenance Sleep" cycles,
+        # each one delayed ~1.1-1.2s waiting on IOUSBMassStorageInterfaceNub/
+        # IOSCSIPeripheralDeviceType00 (the external drive's own USB
+        # mass-storage driver) to acknowledge the transition.
+        # `caffeinate -w <pid>` prevents idle/system sleep for exactly as
+        # long as that specific process is alive, and exits on its own once
+        # it is - doesn't touch the user's actual power settings.
+        try:
+            self._caffeinate = subprocess.Popen(
+                ['caffeinate', '-i', '-s', '-w', str(self.process.processId())])
+        except Exception:
+            self._caffeinate = None
+
+    def _stop_caffeinate(self):
+        if self._caffeinate is not None:
+            if self._caffeinate.poll() is None:
+                self._caffeinate.terminate()
+            self._caffeinate = None
 
     def process_finished(self):
+        self._stop_caffeinate()
         self.quit = False
         self.status_bar.showMessage("%s process ended!" % self.clicked_button_text, 5000)
         self.clicked_button = None
@@ -669,6 +694,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         # child would be orphaned right along with it. terminate() sends
         # SIGTERM, which junction_make_gui.py now catches to clean up its
         # own blast subprocess before exiting.
+        self._stop_caffeinate()
         if self.process.state() != QtCore.QProcess.NotRunning:
             self.process.terminate()
             self.process.waitForFinished(3000)
