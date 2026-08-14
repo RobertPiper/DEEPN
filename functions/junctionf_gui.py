@@ -303,6 +303,10 @@ class junctionf():
                     hit = check_matching_criteria(line_split, rev_indexes, jseqs, rev_sequence_read)
                 hits_count += hit
 
+        print(' ')  # terminate the \r-updating "Read X% of file..." line above
+        print(">>> Found %d junctions in %d number of reads" % (hits_count, reads_count))
+        sys.stdout.flush()
+
     def _make_search_junctions(self, junctions_array):
         jseqs = []
         for junc in junctions_array:
