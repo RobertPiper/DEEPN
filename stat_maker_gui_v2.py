@@ -393,7 +393,12 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         log_cb("Loading .bqp junction data for collation...")
         bqp_data = {}
         for k, path in csv_paths.items():
-            bqp_name = os.path.basename(path).replace('_summary.csv', '') + '.bqp'
+            # Junction Make always prefixes .bqp filenames with 5p_/3p_ (see
+            # functions/junctionf_gui.py's generate_tabulated_blast_results())
+            # - there is no unprefixed .bqp. Stat Maker's junction collation
+            # is 5p-only by design, so this is hardcoded rather than trying
+            # both prefixes.
+            bqp_name = '5p_' + os.path.basename(path).replace('_summary.csv', '') + '.bqp'
             bqp_path = os.path.join(directory, 'blast_results_query', bqp_name)
             if os.path.exists(bqp_path):
                 bqp_data[k] = sc.load_bqp(bqp_path)
