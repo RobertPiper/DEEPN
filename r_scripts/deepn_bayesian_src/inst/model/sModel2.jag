@@ -1,0 +1,36 @@
+model {
+  # Likelihood
+  for (i in 1:ng) {
+    for (j in 1:nvr) {
+      v[i,1,j] ~ dnegbin(vmu[i,1,j]/(vmu[i,1,j]+vmu[i,1,j]^2*omega[1]), 1/omega[1])
+      log(vmu[i,1,j]) <- log(vtr[1,j]) + alpha[i]
+      v[i,2,j] ~ dnegbin(vmu[i,2,j]/(vmu[i,2,j]+vmu[i,2,j]^2*omega[2]), 1/omega[2])
+      log(vmu[i,2,j]) <- log(vtr[2,j]) + psi[j] + alpha[i] + beta[i]
+    }
+    for (k in 1:nb) {
+      y[i,1,k] ~ dnegbin(ymu[i,1,k]/(ymu[i,1,k]+ymu[i,1,k]^2*omega[1]), 1/omega[1])
+      log(ymu[i,1,k]) <- log(ytr[1,k]) + alpha[i]
+      y[i,2,k] ~ dnegbin(ymu[i,2,k]/(ymu[i,2,k]+ymu[i,2,k]^2*omega[2]), 1/omega[2])
+      log(ymu[i,2,k]) <- log(ytr[2,k]) + psi[nvr+k] + alpha[i] + beta[i] + gamma[i,k]
+    }
+  }
+
+  # Prior
+  for (i in 1:ng) {
+    alpha[i] ~ dnorm(m[1], sigma[1]^(-2))
+    beta[i] ~ dnorm(0, sigma[2]^(-2))
+    for (j in 1:nb) {
+      gamma[i,j] ~ dt(m[1+j], sigma[2+j]^(-2), 5)
+    }
+  }
+  for (i in 1:(1+nb)) {
+    m[i] ~ dnorm(0, 0.001)
+  }
+  for (i in 1:(nvr+nb)) {
+    psi[i] ~ dnorm(0, 0.001)
+  }
+  for (s in 1:(2+nb)) {
+    log.sigma[s] ~ dunif(-2, 2)
+    sigma[s] <- exp(log.sigma[s])
+  }
+}

@@ -1,0 +1,9 @@
+import("stats")
+import("utils")
+import("graphics")
+import("runjags")
+import("rjags")
+import("edgeR")
+export(readDeepn, import, importFromDeepn, applyFilter, overdisp, runMCMC, psm,
+       analyzeDeepn, msdPlot, mcvPlot, msfPlot, chooseFilter)
+S3method(summary, psm.deepn)

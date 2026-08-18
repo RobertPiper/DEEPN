@@ -1,0 +1,29 @@
+model {
+  # Likelihood
+  for (i in 1:ng) {
+    for (j in 1:nvr) {
+      v[i,1,j] ~ dnegbin(vmu[i,1,j]/(vmu[i,1,j]+vmu[i,1,j]^2*omega[1]), 1/omega[1])
+      log(vmu[i,1,j]) <- log(vtr[1,j]) + alpha[i]
+      v[i,2,j] ~ dnegbin(vmu[i,2,j]/(vmu[i,2,j]+vmu[i,2,j]^2*omega[2]), 1/omega[2])
+      log(vmu[i,2,j]) <- log(vtr[2,j]) + alpha[i] + beta[i]
+    }
+    y[i,1] ~ dnegbin(ymu[i,1]/(ymu[i,1]+ymu[i,1]^2*omega[1]), 1/omega[1])
+    log(ymu[i,1]) <- log(ytr[1]) + alpha[i]
+    y[i,2] ~ dnegbin(ymu[i,2]/(ymu[i,2]+ymu[i,2]^2*omega[2]), 1/omega[2])
+    log(ymu[i,2]) <- log(ytr[2]) + alpha[i] + beta[i] + gamma[i]
+  }
+
+  # Prior
+  for (i in 1:ng) {
+    alpha[i] ~ dnorm(m[1], sigma[1]^(-2))
+    beta[i] ~ dnorm(m[2], sigma[2]^(-2))
+    gamma[i] ~ dt(m[3], sigma[3]^(-2), 5)
+  }
+  for (i in 1:3) {
+    m[i] ~ dnorm(0, 0.001)
+  }
+  for (s in 1:3) {
+    log.sigma[s] ~ dunif(-2, 2)
+    sigma[s] <- exp(log.sigma[s])
+  }
+}

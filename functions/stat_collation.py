@@ -130,6 +130,52 @@ def build_collated_input(ppm_data, output_dir, collated_path, p_val_thr=0.05, fo
     return collated_path
 
 
+def build_collated_input_v3(ppm_data, output_dir, collated_path, has_bait2,
+                            p_val_thr=0.05, fold_change_thr='none'):
+    """v3: same collated-input format as build_collated_input(), but the
+    'Bait' group is renamed 'Bait1' (to sit alongside an optional 'Bait2'),
+    and a Bait2 CONFIG_START row is only written when has_bait2 is True -
+    the R script's group-building loop is already generic over however many
+    CONFIG rows exist, so an absent Bait2 row means Bait2 simply doesn't
+    exist as a DESeq2 group, and the specificity contrast (Bait1 vs Bait2)
+    is skipped rather than failing.
+
+    ppm_data keys: Bait1S, Bait1N, and (if has_bait2) Bait2S, Bait2N, plus
+    Vector1S, Vector1N, Vector2S, Vector2N."""
+    genes = sorted(ppm_data['Bait1S'].keys())
+    with open(collated_path, 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['data_column', 'note'])
+        w.writerow(['ppm', 'DEEPN gene_count_summary PPM export'])
+        w.writerow([])
+        w.writerow(['CONFIG_START'])
+        w.writerow(['enrich_fold_change', 'enrich_p_val', 'normalized', 'output_directory',
+                    'sample_names_selected', 'sample_names_background'])
+        w.writerow([fold_change_thr, p_val_thr, 'TRUE', output_dir, 'Bait1S', 'Bait1N'])
+        if has_bait2:
+            w.writerow([fold_change_thr, p_val_thr, 'TRUE', output_dir, 'Bait2S', 'Bait2N'])
+        w.writerow([fold_change_thr, p_val_thr, 'TRUE', output_dir, 'Vector1S;Vector2S', 'Vector1N;Vector2N'])
+        w.writerow(['DATA_START'])
+        data_cols = ['GENE', 'Bait1S', 'Bait1N']
+        if has_bait2:
+            data_cols += ['Bait2S', 'Bait2N']
+        data_cols += ['Vector1S', 'Vector2S', 'Vector1N', 'Vector2N']
+        w.writerow(data_cols)
+        for g in genes:
+            row = [g,
+                   round(ppm_data['Bait1S'].get(g, 0.0), 6),
+                   round(ppm_data['Bait1N'].get(g, 0.0), 6)]
+            if has_bait2:
+                row += [round(ppm_data['Bait2S'].get(g, 0.0), 6),
+                        round(ppm_data['Bait2N'].get(g, 0.0), 6)]
+            row += [round(ppm_data['Vector1S'].get(g, 0.0), 6),
+                    round(ppm_data['Vector2S'].get(g, 0.0), 6),
+                    round(ppm_data['Vector1N'].get(g, 0.0), 6),
+                    round(ppm_data['Vector2N'].get(g, 0.0), 6)]
+            w.writerow(row)
+    return collated_path
+
+
 class RScriptError(Exception):
     pass
 
