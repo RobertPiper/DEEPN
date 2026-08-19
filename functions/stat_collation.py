@@ -7,11 +7,66 @@ import subprocess
 
 
 CRAN_DOWNLOAD_URL = 'https://cran.r-project.org/bin/macosx/'
+# CRAN's rjags package hard-requires JAGS 4.x (its own configure script
+# rejects JAGS 5.x outright: "rjags requires JAGS version 4.x.y"). Homebrew's
+# `jags` formula currently only builds 5.0.0, so it is NOT a usable install
+# path here - point directly at the official 4.x installers instead.
+JAGS_DOWNLOAD_URL = 'https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/'
+# Direct download link for the specific installer (matches R 4.3.0+, which
+# covers this app's R requirement) - resolves through SourceForge's mirror
+# redirect chain to the real .pkg, confirmed working via curl -L.
+JAGS_PKG_URL = 'https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/JAGS-4.3.2.pkg/download'
+JAGS_PKG_FILENAME = 'JAGS-4.3.2.pkg'
 
 # optparse/dplyr/tidyr/readr/stringr are on CRAN; DESeq2 is Bioconductor-only,
 # so installation goes through BiocManager for all of them (it can install
 # CRAN packages too).
 REQUIRED_R_PACKAGES = ['optparse', 'DESeq2', 'dplyr', 'tidyr', 'readr', 'stringr']
+
+# rjags/runjags are the R-side bridge to the JAGS engine - same tier as
+# DESeq2 etc. (installable through R's own package manager), unlike JAGS
+# itself, which is a separate standalone program R can't install for you.
+# edgeR is deepn's own overdispersion-estimation dependency (its DESCRIPTION
+# declares Depends: rjags, runjags, edgeR) - Bioconductor-only, same as DESeq2.
+BAYESIAN_R_PACKAGES = ['rjags', 'runjags', 'edgeR']
+
+# The vendored, unmodified copy of pbreheny/deepn (see r_scripts/deepn_bayesian_src/
+# README.md for provenance). Installed as a real local-source R package (not
+# just sourced loose) so analyzeDeepn()'s own system.file(package="deepn")
+# lookups for the JAGS model files resolve correctly, exactly as upstream
+# intended - no monkey-patching of the vendored code itself.
+DEEPN_PKG_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'r_scripts', 'deepn_bayesian_src'))
+
+
+def check_deepn_package(rscript_exe):
+    """Returns True if the vendored 'deepn' R package is installed."""
+    proc = subprocess.run(
+        [rscript_exe, '-e', 'cat(requireNamespace("deepn", quietly=TRUE))'],
+        capture_output=True, text=True
+    )
+    return proc.stdout.strip() == 'TRUE'
+
+
+def install_deepn_package(rscript_exe, progress_callback=None):
+    """Installs the vendored deepn package from local source (not CRAN/
+    Bioconductor - it isn't published there). Requires rjags/runjags/edgeR
+    to already be installed (deepn's own Depends). Streams output lines to
+    progress_callback(line). Raises RScriptError on failure."""
+    expr = 'install.packages(%s, repos=NULL, type="source")' % repr(DEEPN_PKG_DIR).replace("'", '"')
+    proc = subprocess.Popen(
+        [rscript_exe, '-e', expr],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    lines = []
+    for line in proc.stdout:
+        lines.append(line.rstrip('\n'))
+        if progress_callback:
+            progress_callback(line.rstrip('\n'))
+    proc.wait()
+    if proc.returncode != 0:
+        raise RScriptError("Installing vendored 'deepn' package failed:\n" + "\n".join(lines[-40:]))
+    return "\n".join(lines)
 
 
 def find_rscript():
@@ -22,6 +77,71 @@ def find_rscript():
     if found:
         return found
     return None
+
+
+def find_jags():
+    """Locates a jags executable on PATH/common install locations. Does NOT
+    check version compatibility - use check_jags_version() for that, since a
+    present-but-wrong-version jags (e.g. Homebrew's 5.x) is not usable by
+    rjags and must not be reported as verified."""
+    for candidate in ('/usr/local/bin/jags', '/opt/homebrew/bin/jags'):
+        if os.path.exists(candidate):
+            return candidate
+    found = shutil.which('jags')
+    if found:
+        return found
+    return None
+
+
+def check_jags_version(jags_exe):
+    """Returns (compatible, version_string). compatible is True only for
+    JAGS 4.x - rjags's own configure script hard-rejects JAGS 5.x, so a 5.x
+    install is present but not usable.
+
+    JAGS has no '--version' flag (its CLI treats any argument as a command
+    script to open); the version instead appears in the startup banner
+    printed to stdout in interactive mode, e.g.
+    "Welcome to JAGS 4.3.2 (official binary) on <date>". Feed it an
+    immediate 'exit' on stdin so it doesn't hang waiting for commands."""
+    try:
+        proc = subprocess.run([jags_exe], input='exit\n', capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, 'unknown'
+    output = (proc.stdout or '') + (proc.stderr or '')
+    m = re.search(r'Welcome to JAGS\s+(\d+)\.(\d+)\.(\d+)', output)
+    if not m:
+        return False, 'unknown'
+    version = '.'.join(m.groups())
+    return (m.group(1) == '4'), version
+
+
+def download_jags_pkg(progress_callback=None):
+    """Downloads the official JAGS 4.3.2 macOS installer to ~/Downloads via
+    curl (follows SourceForge's mirror-redirect chain). Returns the local
+    path. Raises RScriptError on failure. Does NOT run/install it - that is
+    a separate, explicit step (see open_installer) since it requires the
+    user's own admin password in the OS's own installer dialog."""
+    dest_dir = os.path.expanduser('~/Downloads')
+    dest_path = os.path.join(dest_dir, JAGS_PKG_FILENAME)
+    if progress_callback:
+        progress_callback("Downloading %s to %s ..." % (JAGS_PKG_FILENAME, dest_dir))
+    proc = subprocess.run(
+        ['curl', '-L', '--fail', '-sS', '-o', dest_path, JAGS_PKG_URL],
+        capture_output=True, text=True
+    )
+    if proc.returncode != 0 or not os.path.exists(dest_path):
+        raise RScriptError("Downloading JAGS installer failed:\n" + (proc.stderr or '').strip())
+    if progress_callback:
+        size_mb = os.path.getsize(dest_path) / 1e6
+        progress_callback("Downloaded %s (%.1f MB)." % (dest_path, size_mb))
+    return dest_path
+
+
+def open_installer(pkg_path):
+    """Opens a .pkg in macOS's own Installer.app. The user still has to click
+    through it and enter their admin password there - that step cannot be,
+    and should not be, automated."""
+    subprocess.run(['open', pkg_path])
 
 
 def check_r_packages(rscript_exe, packages=None):
@@ -211,6 +331,49 @@ def load_stats_output(everything_combined_csv):
         reader = csv.DictReader(fh)
         for row in reader:
             gene = row.get('gene')
+            if gene:
+                stats[gene] = row
+    return stats
+
+
+def run_bayesian_r_script(r_script_path, csv_paths, threshold, out_dir, rscript_exe=None):
+    """Runs the Bayesian/MCMC (analyzeDeepn/JAGS) R script directly against the
+    raw gene_count_summary.csv paths already collected by the GUI (Vector1S/
+    Vector1N/Vector2S/Vector2N/Bait1S/Bait1N and optionally Bait2S/Bait2N) -
+    the vendored deepn package reads this same file format itself, so no
+    intermediate collation step is needed here (unlike the DESeq2/PPM side).
+    Returns (stdout_text, outfile_path)."""
+    exe = rscript_exe or find_rscript()
+    if exe is None:
+        raise RScriptError("Could not find Rscript on this machine. Install R (e.g. via Homebrew: 'brew install r').")
+
+    outfile = os.path.join(out_dir, 'bayesian_stats.csv')
+    msgfile = os.path.join(out_dir, 'bayesian_overdispersion.txt')
+    args = [
+        exe, r_script_path,
+        '--vec_sel1', csv_paths['Vector1S'], '--vec_nonsel1', csv_paths['Vector1N'],
+        '--vec_sel2', csv_paths['Vector2S'], '--vec_nonsel2', csv_paths['Vector2N'],
+        '--bait1_sel', csv_paths['Bait1S'], '--bait1_nonsel', csv_paths['Bait1N'],
+        '--threshold', str(threshold),
+        '--outfile', outfile, '--msgfile', msgfile,
+    ]
+    if 'Bait2S' in csv_paths and 'Bait2N' in csv_paths:
+        args += ['--bait2_sel', csv_paths['Bait2S'], '--bait2_nonsel', csv_paths['Bait2N']]
+
+    proc = subprocess.run(args, capture_output=True, text=True)
+    output = (proc.stdout or '') + (proc.stderr or '')
+    if proc.returncode != 0:
+        raise RScriptError("Bayesian R script failed (exit %d):\n%s" % (proc.returncode, output))
+    return output, outfile
+
+
+def load_bayesian_stats_output(bayesian_stats_csv):
+    """Reads the Bayesian R script's output CSV into dict[gene] = row_dict."""
+    stats = {}
+    with open(bayesian_stats_csv, newline='') as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            gene = row.get('Gene')
             if gene:
                 stats[gene] = row
     return stats

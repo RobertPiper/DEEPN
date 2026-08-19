@@ -21,6 +21,8 @@ app = QtWidgets.QApplication(sys.argv)
 form_class, base_class = uic.loadUiType(os.path.join('ui', 'Stat_Maker_v3.ui'))
 
 R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_enrichement_stats_v3.R')
+BAYESIAN_R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_bayesian_stats_v3.R')
+BAYESIAN_THRESHOLD_PPM = 3  # matches Stat Maker v1/v2's threshold_sbx default
 
 METHOD_INFO_TEXT = """STAT MAKER v3 - METHOD OVERVIEW
 
@@ -93,6 +95,30 @@ STATISTICS METHOD (DESeq2)
   computed before DESeq2 runs) - not DESeq2's own per-group dispersion
   estimate, which this program does not report.
 
+STATISTICS METHOD (Bayesian/MCMC, via JAGS)
+
+  This is DEEPN's original statistics method (Patrick Breheny,
+  pbreheny/deepn), run here from an unmodified, vendored copy of that
+  package (r_scripts/deepn_bayesian_src/) rather than re-derived. It
+  requires JAGS 4.x installed separately (see "Verify R + JAGS
+  Installation") - CRAN's rjags package hard-rejects JAGS 5.x.
+
+  A per-gene negative-binomial hierarchical model is fit by MCMC
+  (4 chains, 1500 adapt/burnin/sample iterations each - runMCMC() in the
+  vendored mcmc.R). AdjEnr1/AdjEnr2 are posterior median log2 effect
+  sizes (Bait1/Bait2 vs Vector) and reproduce almost exactly run-to-run.
+  The p-columns (pBait1_Vec, pBait2_Vec, pBait1_Bait2, pBait2_Bait1,
+  pBait1, pBait2) are pnorm(median/MAD) - a posterior probability, not a
+  frequentist p-value - and because pnorm saturates hard toward 0/1, these
+  columns can flip between runs for genes whose effect is only moderately
+  confident, even though the underlying AdjEnr estimate barely moves. This
+  is a known, inherent property of the original method (not something
+  introduced in this port) - treat the p-columns as directional/qualitative
+  and AdjEnr as the more stable quantity when the two seem to disagree.
+
+  With just Bait1 + Vector supplied (no Bait2), the single-bait model
+  (sModel1.jag) is used instead, reporting just AdjEnr/p.
+
 R SCRIPT (run_Y2H_enrichement_stats_v3.R)
 ----------------------------------------------------------------------
 """
@@ -122,6 +148,34 @@ class RInstallThread(QtCore.QThread):
     def run(self):
         try:
             sc.install_r_packages(self.rscript_exe, self.packages, progress_callback=self.lineOutput.emit)
+            self.finished_ok.emit(True, '')
+        except sc.RScriptError as e:
+            self.finished_ok.emit(False, str(e))
+
+
+class JagsDownloadThread(QtCore.QThread):
+    lineOutput = QtCore.pyqtSignal(str)
+    finished_ok = QtCore.pyqtSignal(bool, str)
+
+    def run(self):
+        try:
+            pkg_path = sc.download_jags_pkg(progress_callback=self.lineOutput.emit)
+            self.finished_ok.emit(True, pkg_path)
+        except sc.RScriptError as e:
+            self.finished_ok.emit(False, str(e))
+
+
+class DeepnInstallThread(QtCore.QThread):
+    lineOutput = QtCore.pyqtSignal(str)
+    finished_ok = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, rscript_exe, parent=None):
+        QtCore.QThread.__init__(self, parent)
+        self.rscript_exe = rscript_exe
+
+    def run(self):
+        try:
+            sc.install_deepn_package(self.rscript_exe, progress_callback=self.lineOutput.emit)
             self.finished_ok.emit(True, '')
         except sc.RScriptError as e:
             self.finished_ok.emit(False, str(e))
@@ -167,7 +221,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.bait2_nonsel_list.deleted.connect(self.file_deleted)
 
         self.folder_choice_btn.clicked.connect(self.on_folder_choice_btn_clicked)
-        self.verify_r_btn.clicked.connect(self.on_verify_r_btn_clicked)
+        self.verify_env_btn.clicked.connect(self.on_verify_env_btn_clicked)
         self.collate_btn.clicked.connect(self.on_collate_btn_clicked)
         self.method_info_btn.clicked.connect(self.on_method_info_btn_clicked)
         self.quit_btn.clicked.connect(self.on_quit_btn_clicked)
@@ -176,24 +230,51 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.data = {}
         self.directory = '~/'
         self.rscript_exe = sc.find_rscript()
-        self.r_verified = False
+        self.jags_exe = sc.find_jags()
+        self.jags_compatible = False
+        if self.jags_exe:
+            self.jags_compatible, self.jags_version = sc.check_jags_version(self.jags_exe)
+        else:
+            self.jags_version = None
+        self.env_verified = False
         self.r_thread = None
+        self.jags_download_thread = None
+        self.deepn_thread = None
         self.collate_thread = None
 
         self.log("Stat Maker v3 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
-        if self.rscript_exe:
-            self.log("Found Rscript: %s" % self.rscript_exe)
+        self.log("Found Rscript: %s" % self.rscript_exe if self.rscript_exe else
+                 "Rscript not found on this machine yet.")
+        if self.jags_exe and self.jags_compatible:
+            self.log("Found jags %s (compatible): %s" % (self.jags_version, self.jags_exe))
+        elif self.jags_exe:
+            self.log("Found jags %s at %s, but rjags requires JAGS 4.x - this version won't work." %
+                     (self.jags_version, self.jags_exe))
         else:
-            self.log("Rscript not found on this machine yet. Click 'Verify R Installation'.")
+            self.log("jags not found on this machine yet.")
+        if not (self.rscript_exe and self.jags_exe and self.jags_compatible):
+            self.log("Click 'Verify R + JAGS Installation'.")
 
     def log(self, text):
         self.log_text.append(text)
         self.log_text.ensureCursorVisible()
 
-    # ---------- R environment check/install ----------
+    # ---------- R + JAGS environment check/install ----------
+    # Three tiers, checked in order: R itself and JAGS itself are separate
+    # standalone programs neither can install for the other - if missing,
+    # this only ever points the user at a manual install (CRAN's own
+    # installer for R; the official SourceForge installer for JAGS - NOT
+    # Homebrew, whose `jags` formula is 5.0.0, a version CRAN's rjags
+    # package hard-rejects at its own configure step). Once both exist,
+    # the R *packages* each needs (DESeq2 etc., and now rjags/runjags) are
+    # auto-installable through R's own package manager, same as always.
 
     @QtCore.pyqtSlot()
-    def on_verify_r_btn_clicked(self):
+    def on_verify_env_btn_clicked(self):
+        self.verify_env_btn.setEnabled(False)
+        self._verify_rscript_step()
+
+    def _verify_rscript_step(self):
         self.rscript_exe = sc.find_rscript()
         if self.rscript_exe is None:
             box = QtWidgets.QMessageBox(self)
@@ -205,24 +286,81 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             box.exec_()
             if box.clickedButton() == download_btn:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl(sc.CRAN_DOWNLOAD_URL))
-                self.log("Opened %s - after installing R, click 'Verify R Installation' again." % sc.CRAN_DOWNLOAD_URL)
+                self.log("Opened %s - after installing R, click 'Verify R + JAGS Installation' again." % sc.CRAN_DOWNLOAD_URL)
+            self.verify_env_btn.setEnabled(True)
             return
 
         self.log("Rscript found: %s" % self.rscript_exe)
+        self._verify_jags_step()
+
+    def _verify_jags_step(self):
+        self.jags_exe = sc.find_jags()
+        self.jags_compatible = False
+        self.jags_version = None
+        if self.jags_exe:
+            self.jags_compatible, self.jags_version = sc.check_jags_version(self.jags_exe)
+
+        if not self.jags_compatible:
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle("JAGS 4.x Required")
+            if self.jags_exe:
+                box.setText(
+                    "Found JAGS %s at %s, but the Bayesian statistics method needs "
+                    "JAGS 4.x specifically - rjags (the R/JAGS bridge) rejects JAGS 5.x.\n\n"
+                    "Note: Homebrew's 'jags' formula currently only builds 5.x and is NOT "
+                    "usable here. Install the official JAGS 4.3.2 package below instead."
+                    % (self.jags_version, self.jags_exe))
+            else:
+                box.setText(
+                    "JAGS (the MCMC engine the Bayesian statistics method needs) does not "
+                    "appear to be installed on this Mac.\n\n"
+                    "Install JAGS 4.3.2 from the official installer below - NOT Homebrew's "
+                    "'jags' formula, which is version 5.x and incompatible with rjags.")
+            fetch_btn = box.addButton("Download and Open Installer", QtWidgets.QMessageBox.ActionRole)
+            download_btn = box.addButton("Open Download Page", QtWidgets.QMessageBox.ActionRole)
+            box.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+            box.exec_()
+            clicked = box.clickedButton()
+            if clicked == fetch_btn:
+                self.log("Downloading %s ..." % sc.JAGS_PKG_URL)
+                self.jags_download_thread = JagsDownloadThread(self)
+                self.jags_download_thread.lineOutput.connect(self.log)
+                self.jags_download_thread.finished_ok.connect(self._jags_download_finished)
+                self.jags_download_thread.start()
+                return
+            elif clicked == download_btn:
+                QtGui.QDesktopServices.openUrl(QtCore.QUrl(sc.JAGS_DOWNLOAD_URL))
+                self.log("Opened %s - after installing JAGS 4.x, click 'Verify R + JAGS Installation' again." % sc.JAGS_DOWNLOAD_URL)
+            self.verify_env_btn.setEnabled(True)
+            return
+
+        self.log("jags %s found (compatible): %s" % (self.jags_version, self.jags_exe))
+        self._verify_packages_step()
+
+    @QtCore.pyqtSlot(bool, str)
+    def _jags_download_finished(self, ok, result):
+        if not ok:
+            self.log("JAGS download FAILED: %s" % result)
+            QtWidgets.QMessageBox.critical(self, "Download Failed", result[:2000])
+            self.verify_env_btn.setEnabled(True)
+            return
+        pkg_path = result
+        self.log("Opening %s in Installer.app - follow the prompts and enter your Mac "
+                 "password when asked, then click 'Verify R + JAGS Installation' again." % pkg_path)
+        sc.open_installer(pkg_path)
+        self.verify_env_btn.setEnabled(True)
+
+    def _verify_packages_step(self):
         self.log("Checking required R packages...")
-        self.verify_r_btn.setEnabled(False)
         QtWidgets.QApplication.processEvents()
-        status = sc.check_r_packages(self.rscript_exe)
+        packages = sc.REQUIRED_R_PACKAGES + sc.BAYESIAN_R_PACKAGES
+        status = sc.check_r_packages(self.rscript_exe, packages)
         missing = [p for p, ok in status.items() if not ok]
         for p, ok in status.items():
             self.log("  %-10s %s" % (p, "OK" if ok else "MISSING"))
 
         if not missing:
-            self.r_verified = True
-            self.log("All required R packages are installed.")
-            self.verify_r_btn.setText("R Installation Verified")
-            self.verify_r_btn.setEnabled(False)
-            self._update_collate_enabled()
+            self._verify_deepn_step()
             return
 
         reply = QtWidgets.QMessageBox.question(
@@ -233,7 +371,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
         )
         if reply != QtWidgets.QMessageBox.Yes:
-            self.verify_r_btn.setEnabled(True)
+            self.verify_env_btn.setEnabled(True)
             return
 
         self.log("Installing: %s ..." % ", ".join(missing))
@@ -244,22 +382,51 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
     @QtCore.pyqtSlot(bool, str)
     def _r_install_finished(self, ok, err):
-        self.verify_r_btn.setEnabled(True)
         if not ok:
             self.log("R package installation FAILED: %s" % err)
             QtWidgets.QMessageBox.critical(self, "Installation Failed", err[:2000])
+            self.verify_env_btn.setEnabled(True)
             return
         self.log("R package installation finished. Re-checking...")
-        status = sc.check_r_packages(self.rscript_exe)
+        packages = sc.REQUIRED_R_PACKAGES + sc.BAYESIAN_R_PACKAGES
+        status = sc.check_r_packages(self.rscript_exe, packages)
         missing = [p for p, ok2 in status.items() if not ok2]
         if missing:
             self.log("Still missing: %s" % ", ".join(missing))
+            self.verify_env_btn.setEnabled(True)
         else:
-            self.r_verified = True
-            self.log("All required R packages are installed.")
-            self.verify_r_btn.setText("R Installation Verified")
-            self.verify_r_btn.setEnabled(False)
-            self._update_collate_enabled()
+            self._verify_deepn_step()
+
+    def _verify_deepn_step(self):
+        self.log("Checking vendored 'deepn' package (pbreheny/deepn, hardwired local copy)...")
+        QtWidgets.QApplication.processEvents()
+        if sc.check_deepn_package(self.rscript_exe):
+            self.log("  deepn      OK")
+            self._env_fully_verified()
+            return
+
+        self.log("  deepn      MISSING - installing from vendored local source...")
+        self.deepn_thread = DeepnInstallThread(self.rscript_exe, self)
+        self.deepn_thread.lineOutput.connect(self.log)
+        self.deepn_thread.finished_ok.connect(self._deepn_install_finished)
+        self.deepn_thread.start()
+
+    @QtCore.pyqtSlot(bool, str)
+    def _deepn_install_finished(self, ok, err):
+        if not ok:
+            self.log("deepn package installation FAILED: %s" % err)
+            QtWidgets.QMessageBox.critical(self, "Installation Failed", err[:2000])
+            self.verify_env_btn.setEnabled(True)
+            return
+        self.log("deepn package installed.")
+        self._env_fully_verified()
+
+    def _env_fully_verified(self):
+        self.env_verified = True
+        self.log("R + JAGS environment fully verified.")
+        self.verify_env_btn.setText("R + JAGS Verified")
+        self.verify_env_btn.setEnabled(False)
+        self._update_collate_enabled()
 
     # ---------- folder / file selection ----------
 
@@ -358,11 +525,11 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
     @QtCore.pyqtSlot()
     def on_collate_btn_clicked(self):
-        if not self.r_verified:
+        if not self.env_verified:
             reply = QtWidgets.QMessageBox.question(
-                self, "R Not Verified",
-                "R installation hasn't been verified yet this session. Continue anyway "
-                "(the statistics step will fail if R/DESeq2 isn't actually available)?",
+                self, "Environment Not Verified",
+                "R + JAGS installation hasn't been verified yet this session. Continue anyway "
+                "(the statistics step will fail if R/DESeq2/JAGS isn't actually available)?",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply != QtWidgets.QMessageBox.Yes:
                 return
@@ -423,6 +590,18 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         stats_csv = os.path.join(run_out_dir, 'everything_combined.csv')
         stats = sc.load_stats_output(stats_csv)
 
+        log_cb("Running Bayesian/MCMC statistics (analyzeDeepn via JAGS - this is the slow "
+               "step, several minutes)...")
+        try:
+            bayes_output, bayes_csv = sc.run_bayesian_r_script(
+                BAYESIAN_R_SCRIPT_PATH, csv_paths, BAYESIAN_THRESHOLD_PPM, run_out_dir, self.rscript_exe)
+            for line in bayes_output.splitlines():
+                log_cb("  [R/JAGS] " + line)
+            bayesian_stats = sc.load_bayesian_stats_output(bayes_csv)
+        except sc.RScriptError as e:
+            log_cb("Bayesian/MCMC statistics FAILED (DESeq2 results above are still valid): %s" % e)
+            bayesian_stats = {}
+
         log_cb("Loading .bqp junction data for collation...")
         bqp_data = {}
         for k, path in csv_paths.items():
@@ -449,7 +628,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         out_name = 'stat_maker_%s.xlsx' % timestamp
         out_path = os.path.join(out_folder, out_name)
         self._write_workbook(out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
-                             stats, bqp_data, genes, has_bait2, log_cb)
+                             stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb)
         log_cb("Wrote %s" % out_path)
 
     # ---------- output workbook ----------
@@ -460,12 +639,14 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # pivot table) actually attach to.
 
     def _write_workbook(self, out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
-                        stats, bqp_data, genes, has_bait2, log_cb):
+                        stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb):
         workbook = xls.Workbook(out_path)
         ws = workbook.add_worksheet('results')
 
         fmt_group_deseq2 = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
                                                 'bg_color': '#D9E8FB', 'border': 1})
+        fmt_group_bayesian = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
+                                                   'bg_color': '#E6D9F7', 'border': 1})
         fmt_group_junction = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
                                                    'bg_color': '#E9E9E9', 'border': 1})
         fmt_field = workbook.add_format({'bold': True, 'border': 1})
@@ -509,6 +690,24 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             else:
                 ws.write(group_row, start_col, label, fmt_group_deseq2)
 
+        # Bayesian/MCMC block (analyzeDeepn via JAGS). Column set mirrors
+        # summary-psm.R's two branches: the 2-bait model reports AdjEnr1/
+        # AdjEnr2 (posterior effect size per bait) plus four pairwise
+        # probabilities and the two specificity-adjusted pBait1/pBait2; the
+        # 1-bait model (no Bait2 supplied) reports just AdjEnr/p.
+        if has_bait2:
+            bayesian_fields = ['AdjEnr1', 'AdjEnr2', 'pBait1_Vec', 'pBait2_Vec',
+                               'pBait1_Bait2', 'pBait2_Bait1', 'pBait1', 'pBait2']
+        else:
+            bayesian_fields = ['AdjEnr', 'p']
+        bayesian_field_cols = []  # (bayesian_dict_key, worksheet_col)
+        start_col = col
+        for fld in bayesian_fields:
+            ws.write(field_row, col, fld, fmt_field)
+            bayesian_field_cols.append((fld, col))
+            col += 1
+        ws.merge_range(group_row, start_col, group_row, col - 1, 'Bayesian Enrichment (MCMC/JAGS)', fmt_group_bayesian)
+
         junction_field_cols = []  # (dataset_key, junction_col, worksheet_col)
         for k in dataset_order:
             start_col = col
@@ -525,6 +724,9 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             srow = stats.get(gene, {})
             for stats_key, wcol in stat_field_cols:
                 ws.write(data_row, wcol, srow.get(stats_key, ''))
+            brow = bayesian_stats.get(gene, {})
+            for fld, wcol in bayesian_field_cols:
+                ws.write(data_row, wcol, brow.get(fld, ''))
             for k, jc, wcol in junction_field_cols:
                 gstat = sc.get_junction_stats(bqp_data[k], gene)
                 ws.write(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)])

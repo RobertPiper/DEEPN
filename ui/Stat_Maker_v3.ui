@@ -58,9 +58,9 @@
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="verify_r_btn">
+       <widget class="QPushButton" name="verify_env_btn">
         <property name="text">
-         <string>Verify R Installation</string>
+         <string>Verify R + JAGS Installation</string>
         </property>
        </widget>
       </item>
