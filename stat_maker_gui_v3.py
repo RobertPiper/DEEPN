@@ -220,11 +220,17 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.bait2_sel_list.deleted.connect(self.file_deleted)
         self.bait2_nonsel_list.deleted.connect(self.file_deleted)
 
-        self.folder_choice_btn.clicked.connect(self.on_folder_choice_btn_clicked)
-        self.verify_env_btn.clicked.connect(self.on_verify_env_btn_clicked)
-        self.collate_btn.clicked.connect(self.on_collate_btn_clicked)
-        self.method_info_btn.clicked.connect(self.on_method_info_btn_clicked)
-        self.quit_btn.clicked.connect(self.on_quit_btn_clicked)
+        # Handler names deliberately do NOT match the on_<widget>_<signal>
+        # pattern - setupUi()'s connectSlotsByName() binds a matching name to
+        # BOTH of clicked's signal overloads (clicked() and clicked(bool)),
+        # firing the handler twice per click even with no explicit connect
+        # at all. Avoiding the naming convention and connecting explicitly,
+        # once, is the only reliable way to get exactly one call per click.
+        self.folder_choice_btn.clicked.connect(self.folder_choice_clicked)
+        self.verify_env_btn.clicked.connect(self.verify_env_clicked)
+        self.collate_btn.clicked.connect(self.collate_clicked)
+        self.method_info_btn.clicked.connect(self.method_info_clicked)
+        self.quit_btn.clicked.connect(self.quit_clicked)
 
         self.fileio = f.fileio()
         self.data = {}
@@ -270,7 +276,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # auto-installable through R's own package manager, same as always.
 
     @QtCore.pyqtSlot()
-    def on_verify_env_btn_clicked(self):
+    def verify_env_clicked(self):
         self.verify_env_btn.setEnabled(False)
         self._verify_rscript_step()
 
@@ -434,7 +440,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.fileio.create_new_folder(directory, "stat_maker_output")
 
     @QtCore.pyqtSlot()
-    def on_folder_choice_btn_clicked(self):
+    def folder_choice_clicked(self):
         directory = str(QtWidgets.QFileDialog.getExistingDirectory(QtWidgets.QFileDialog(), "Locate Work Folder",
                                                                os.path.expanduser("~"),
                                                                QtWidgets.QFileDialog.ShowDirsOnly))
@@ -524,7 +530,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # ---------- collate + stats ----------
 
     @QtCore.pyqtSlot()
-    def on_collate_btn_clicked(self):
+    def collate_clicked(self):
         if not self.env_verified:
             reply = QtWidgets.QMessageBox.question(
                 self, "Environment Not Verified",
@@ -593,7 +599,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         log_cb("Running Bayesian/MCMC statistics (analyzeDeepn via JAGS - this is the slow "
                "step, several minutes)...")
         try:
-            bayes_output, bayes_csv = sc.run_bayesian_r_script(
+            bayes_output, bayes_csv, bayes_overdispersion = sc.run_bayesian_r_script(
                 BAYESIAN_R_SCRIPT_PATH, csv_paths, BAYESIAN_THRESHOLD_PPM, run_out_dir, self.rscript_exe)
             for line in bayes_output.splitlines():
                 log_cb("  [R/JAGS] " + line)
@@ -601,16 +607,20 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         except sc.RScriptError as e:
             log_cb("Bayesian/MCMC statistics FAILED (DESeq2 results above are still valid): %s" % e)
             bayesian_stats = {}
+            bayes_overdispersion = {}
 
         log_cb("Loading .bqp junction data for collation...")
         bqp_data = {}
         for k, path in csv_paths.items():
-            bqp_name = '5p_' + os.path.basename(path).replace('_summary.csv', '') + '.bqp'
-            bqp_path = os.path.join(directory, 'blast_results_query', bqp_name)
-            if os.path.exists(bqp_path):
+            basename = os.path.basename(path).replace('_summary.csv', '')
+            bqp_path = sc.find_bqp_path(directory, basename)
+            if bqp_path:
+                if os.path.basename(bqp_path) == basename + '.bqp':
+                    log_cb("  %-10s using legacy-named 5p file (no prefix): %s" % (k, os.path.basename(bqp_path)))
                 bqp_data[k] = sc.load_bqp(bqp_path)
             else:
-                log_cb("  WARNING: no .bqp found for %s (expected %s) - junction stats will be 0 for it" % (k, bqp_name))
+                log_cb("  WARNING: no .bqp found for %s (checked 5p_%s.bqp and %s.bqp) - junction stats will be 0 for it"
+                       % (k, basename, basename))
                 bqp_data[k] = {}
 
         dataset_order = ['Bait1N', 'Bait1S'] + (['Bait2N', 'Bait2S'] if has_bait2 else []) + \
@@ -628,7 +638,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         out_name = 'stat_maker_%s.xlsx' % timestamp
         out_path = os.path.join(out_folder, out_name)
         self._write_workbook(out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
-                             stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb)
+                             bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb)
         log_cb("Wrote %s" % out_path)
 
     # ---------- output workbook ----------
@@ -639,7 +649,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # pivot table) actually attach to.
 
     def _write_workbook(self, out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
-                        stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb):
+                        bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb):
         workbook = xls.Workbook(out_path)
         ws = workbook.add_worksheet('results')
 
@@ -651,16 +661,34 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                                                    'bg_color': '#E9E9E9', 'border': 1})
         fmt_field = workbook.add_format({'bold': True, 'border': 1})
         fmt_gene = workbook.add_format({'bold': True})
+        fmt_section = workbook.add_format({'bold': True})
 
         row = 0
         for k in csv_paths:
             ws.write(row, 0, dataset_labels[k])
             ws.write(row, 1, csv_paths[k])
             row += 1
-        if overdispersion is not None:
-            ws.write(row, 0, 'Overdispersion (non-selected)')
-            ws.write(row, 1, overdispersion)
+
+        # Both methods' overdispersion estimates, side by side for direct
+        # comparison: analyzeDeepn()'s edgeR-based estimates (the original
+        # Bayesian-method math, computed on raw counts) alongside DESeq2's
+        # own estimate (computed on PPM) - deliberately kept separate since
+        # they're different quantities from different pipelines, not
+        # expected to match each other.
+        overdisp_rows = [
+            ('Vector non-select', bayes_overdispersion.get('vector_nonselect')),
+            ('vector+Bait non-select', bayes_overdispersion.get('vector_bait_nonselect')),
+            ('Vector select', bayes_overdispersion.get('vector_select')),
+            ('DESeq Vector non-select', overdispersion),
+        ]
+        if any(v is not None for _, v in overdisp_rows):
+            ws.write(row, 0, 'OVERDISPERSION', fmt_section)
             row += 1
+            for label, value in overdisp_rows:
+                ws.write(row, 0, label)
+                if value is not None:
+                    ws.write_number(row, 1, value)
+                row += 1
         row += 1
 
         group_row = row
@@ -723,10 +751,21 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             ws.write(data_row, 0, gene)
             srow = stats.get(gene, {})
             for stats_key, wcol in stat_field_cols:
-                ws.write(data_row, wcol, srow.get(stats_key, ''))
+                # Leave the cell genuinely blank (not '') when a gene has no
+                # value - Excel sorts numbers vs. text in reversed relative
+                # order between ascending/descending, so a text '' placeholder
+                # jumps to the top on a descending sort; a true blank cell
+                # sorts to the end regardless of direction. Values also come
+                # from csv.DictReader as strings - write as float so Excel
+                # sorts/filters them numerically instead of lexicographically.
+                # DESeq2 legitimately reports 'NA' for some genes (outlier/
+                # independent filtering) - treat that the same as missing.
+                if stats_key in srow and srow[stats_key] != 'NA':
+                    ws.write_number(data_row, wcol, float(srow[stats_key]))
             brow = bayesian_stats.get(gene, {})
             for fld, wcol in bayesian_field_cols:
-                ws.write(data_row, wcol, brow.get(fld, ''))
+                if fld in brow and brow[fld] != 'NA':
+                    ws.write_number(data_row, wcol, float(brow[fld]))
             for k, jc, wcol in junction_field_cols:
                 gstat = sc.get_junction_stats(bqp_data[k], gene)
                 ws.write(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)])
@@ -738,7 +777,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         workbook.close()
 
     @QtCore.pyqtSlot()
-    def on_method_info_btn_clicked(self):
+    def method_info_clicked(self):
         try:
             with open(R_SCRIPT_PATH, encoding='utf-8') as fh:
                 r_source = fh.read()
@@ -760,7 +799,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         dialog.exec_()
 
     @QtCore.pyqtSlot()
-    def on_quit_btn_clicked(self):
+    def quit_clicked(self):
         app.quit()
         sys.exit()
 

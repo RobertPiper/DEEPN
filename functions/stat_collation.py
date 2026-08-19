@@ -364,7 +364,44 @@ def run_bayesian_r_script(r_script_path, csv_paths, threshold, out_dir, rscript_
     output = (proc.stdout or '') + (proc.stderr or '')
     if proc.returncode != 0:
         raise RScriptError("Bayesian R script failed (exit %d):\n%s" % (proc.returncode, output))
-    return output, outfile
+
+    # analyzeDeepn()'s own overdispersion report (edgeR common dispersion,
+    # computed on raw counts - the original Bayesian-method math, distinct
+    # from DESeq2's own dispersion estimate on the PPM side).
+    bayesian_overdispersion = {}
+    patterns = {
+        'vector_nonselect': r'Baseline \(vector only\):\s*([0-9.eE+-]+)',
+        'vector_bait_nonselect': r'Baseline \(vector \+ bait\):\s*([0-9.eE+-]+)',
+        'vector_select': r'Selection:\s*([0-9.eE+-]+)',
+    }
+    for key, pattern in patterns.items():
+        m = re.search(pattern, output)
+        if m:
+            try:
+                bayesian_overdispersion[key] = float(m.group(1))
+            except ValueError:
+                pass
+
+    return output, outfile, bayesian_overdispersion
+
+
+def find_bqp_path(directory, basename):
+    """Locates the 5p .bqp file for a gene_count_summary basename, checking
+    both naming conventions: the current 5p_<basename>.bqp, and the legacy
+    convention (pre-dating the 5p_/3p_ prefix scheme) where 5p files were
+    written with no prefix at all and only 3p files got a '3p_' prefix - a
+    plain <basename>.bqp sitting next to a 3p_<basename>.bqp sibling is the
+    legacy 5p file. Confirmed against real 2018-era data (DEEPN_2018_RabGTPase),
+    which has zero 5p_-prefixed files but a full set of unprefixed ones.
+    Returns the resolved path, or None if neither exists."""
+    query_dir = os.path.join(directory, 'blast_results_query')
+    prefixed = os.path.join(query_dir, '5p_' + basename + '.bqp')
+    if os.path.exists(prefixed):
+        return prefixed
+    legacy = os.path.join(query_dir, basename + '.bqp')
+    if os.path.exists(legacy):
+        return legacy
+    return None
 
 
 def load_bayesian_stats_output(bayesian_stats_csv):
@@ -414,8 +451,10 @@ def get_junction_stats(bqp_data, gene_name):
         pass
     try:
         for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron'):
-            gene_stat[key] = format(gene_stat[key] * 100.0 / gene_stat['total'], ".1f")
+            # round(), not format(...,'.1f') - format() returns a string,
+            # which Excel then treats as text rather than a sortable number.
+            gene_stat[key] = round(gene_stat[key] * 100.0 / gene_stat['total'], 1)
     except ZeroDivisionError:
         for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron'):
-            gene_stat[key] = '0'
+            gene_stat[key] = 0
     return gene_stat
