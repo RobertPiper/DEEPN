@@ -489,6 +489,14 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         self.comment.continue_btn.clicked.connect(self.comment_continue_signal)
         self.comment.quit_btn.setEnabled(False)
 
+        # The main window's own Quit button (distinct from self.message.quit_btn/
+        # self.comment.quit_btn above, which belong to sub-dialogs) had no
+        # handler connected anywhere - clicking it did nothing. Deliberately
+        # named to NOT match on_quit_btn_clicked, since setupUi()'s
+        # connectSlotsByName() binds a matching name to both of clicked's
+        # signal overloads and fires it twice per click.
+        self.quit_btn.clicked.connect(self.quit_app_clicked)
+
     @QtCore.pyqtSlot()
     def on_info_btn_clicked(self):
         dialog = QtWidgets.QDialog(self)
@@ -808,6 +816,9 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
             if self.message.isVisible():
                 self.message.close()
             self.process_finished()
+
+    def quit_app_clicked(self):
+        app.quit()
 
     def on_about_to_quit(self):
         # Without this, quitting DEEPN mid-run leaves whatever it launched
