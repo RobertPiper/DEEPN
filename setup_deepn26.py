@@ -10,13 +10,16 @@ Builds one app bundle containing:
   - query_blast_gui.py        \  Contents/MacOS/, sharing the same embedded
   - read_depth_gui_v2.py       /  Python runtime as the main app.
   - fragfinder_gui.py         /
-  - stat_maker_gui_v2.py     /
+  - stat_maker_gui_v3.py     /
 
 Stat Maker needs no state from DEEPN's own database (it does its own
 folder/dataset selection internally), so it's bundled here as a launcher
 module *and* still built separately as its own standalone app via
-setup_statmaker26.py - same script, two independent builds, no shared
-state between them.
+setup_statmaker26v3.py - same script, two independent builds, no shared
+state between them. stat_maker_gui_v2.py (DESeq2-only, no Bayesian/MCMC
+phase, no Bait2 specificity contrast) still exists in the repo and can
+still be run directly, but is no longer what DEEPN's own Stat Maker
+button launches, and is no longer bundled into this app.
 
 mapster_gc_jm.py chains a bundled, self-contained copy of MAPster (built
 separately - see LOCAL_MAPster/build_mapster.sh - and copied into
@@ -46,7 +49,7 @@ EXTRA_SCRIPTS = [
     'query_blast_gui.py',
     'read_depth_gui_v2.py',
     'fragfinder_gui.py',
-    'stat_maker_gui_v2.py',
+    'stat_maker_gui_v3.py',
 ]
 
 APP = [{

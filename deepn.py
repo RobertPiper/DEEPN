@@ -165,14 +165,21 @@ HOW TO USE THIS
      already processed that .sam file.
 
   7. Stat Maker (Analyze Data section - see its own Method Info button
-     for the DESeq2 method and citation) compares a bait against a
-     vector control using the gene_count_summary and .bqp files from
-     steps 3-4, and produces one combined results table. Unlike the
-     other Analyze Data tools, it needs no library or work folder
-     selected here - it does its own folder/dataset selection - so
-     its button is available as soon as DEEPN opens. It's also still
-     available as its own separate app for anyone who just wants
-     Stat Maker without the rest of DEEPN.
+     for the full DESeq2 and Bayesian/MCMC method details and citations)
+     compares one or two baits against a vector control using the
+     gene_count_summary and .bqp files from steps 3-4, and produces one
+     combined results table: DESeq2 enrichment/specificity statistics,
+     an original Bayesian/MCMC re-analysis (via JAGS - needs JAGS 4.x
+     installed separately; the button walks you through checking for
+     and installing it), and junction-frame collation, side by side.
+     Supplying a second bait adds a Bait1-vs-Bait2 specificity contrast
+     on both the DESeq2 and Bayesian sides; with just one bait, it runs
+     the plain enrichment-vs-vector comparison only. Unlike the other
+     Analyze Data tools, it needs no library or work folder selected
+     here - it does its own folder/dataset selection - so its button is
+     available as soon as DEEPN opens. It's also still available as its
+     own separate app for anyone who just wants Stat Maker without the
+     rest of DEEPN.
 
   8. FragFinder (Analyze Data section) focuses on one gene within one
      dataset at a time, lining up Read Depth, 5' junctions, and 3'
@@ -258,11 +265,24 @@ Compared to the original 2018 build (Python 2 / PyQt4, Intel-only):
     pick from its list of NM_ transcript variants, instead of only
     being able to search by exact NM_ accession number.
 
-  - Stat Maker rebuilt. JAGS-based Bayesian statistics have been
-    retired entirely. Statistics are now computed with DESeq2 (see
-    Stat Maker's own Method Info for the full method and citation),
-    and junction-data collation from BLAST results was rebuilt as an
-    independent step.
+  - Stat Maker rebuilt, twice. First pass: JAGS-based Bayesian
+    statistics were retired in favor of DESeq2 (see Stat Maker's own
+    Method Info for the full method and citation), and junction-data
+    collation from BLAST results was rebuilt as an independent step.
+    Second pass (Stat Maker v3): a second bait can now be supplied for
+    a Bait1-vs-Bait2 specificity contrast on the DESeq2 side, and the
+    original JAGS/Bayesian method has been brought back rather than
+    left retired - run from a vendored, unmodified copy of the
+    original pbreheny/deepn R package (needs JAGS 4.x installed
+    separately; CRAN's rjags rejects JAGS 5.x, so the button's install
+    check points at the official installer rather than Homebrew). Its
+    two-bait model was reverted to the version that predates a 2018
+    upstream commit which added a parameter that turns out to make the
+    posterior unidentifiable for single-replicate baits (confirmed via
+    Gelman-Rubin diagnostics); the reverted model reproduces DEEPN's
+    own 2018 published results almost exactly on real data. DESeq2 and
+    Bayesian results now appear as separate, adjacent column blocks in
+    the same output table rather than one replacing the other.
 
   - Recovered reference data. The gene list files (lists/*.prn)
     needed by Blast Query, Read Depth, and Junction Make were missing
@@ -997,19 +1017,33 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
         _update_viewer_buttons_enabled()."""
         proc = self._viewer_processes.get(button)
         if proc is not None:
+            proc._user_aborted = True
             proc.terminate()
             return
         proc = QtCore.QProcess(self)
-        proc.finished.connect(lambda *a, b=button: self._on_viewer_process_finished(b))
+        proc._user_aborted = False
+        proc.setProcessChannelMode(QtCore.QProcess.MergedChannels)
+        proc.finished.connect(
+            lambda code, status, b=button, p=proc: self._on_viewer_process_finished(b, p, code, status))
         self._viewer_processes[button] = proc
         button.setText("Abort")
         self.status_bar.showMessage("Running %s ..." % self._viewer_button_labels[button])
         proc.start(script_path(script), arguments)
 
-    def _on_viewer_process_finished(self, button):
+    def _on_viewer_process_finished(self, button, proc, exit_code, exit_status):
         button.setText(self._viewer_button_labels[button])
         self.status_bar.showMessage("%s process ended!" % self._viewer_button_labels[button], 5000)
         self._viewer_processes.pop(button, None)
+        # A deliberate Abort click (terminate()) is expected to exit non-zero/
+        # crashed - only surface output for an exit nobody asked for, since
+        # that's the case where a silent "process ended!" leaves no way to
+        # tell what actually happened.
+        if not proc._user_aborted and (exit_code != 0 or exit_status == QtCore.QProcess.CrashExit):
+            output = bytes(proc.readAllStandardOutput()).decode('utf-8', errors='replace').strip()
+            QtWidgets.QMessageBox.critical(
+                self, "%s Failed" % self._viewer_button_labels[button],
+                "%s exited unexpectedly (exit code %d).\n\n%s" %
+                (self._viewer_button_labels[button], exit_code, output[-3000:] or "(no output captured)"))
 
     def _viewer_prereq_met(self, button):
         if button is self.stat_maker_btn:
@@ -1054,7 +1088,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
 
     @QtCore.pyqtSlot()
     def on_stat_maker_btn_clicked(self):
-        self._launch_viewer_tool(self.stat_maker_btn, 'stat_maker_gui_v2.py', [])
+        self._launch_viewer_tool(self.stat_maker_btn, 'stat_maker_gui_v3.py', [])
 
 form = DEEPN_Launcher()
 form.show()
