@@ -20,11 +20,11 @@ import DragDropListView
 app = QtWidgets.QApplication(sys.argv)
 form_class, base_class = uic.loadUiType(os.path.join('ui', 'Stat_Maker_v3.ui'))
 
-R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_enrichement_stats_v3.R')
+R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_enrichement_stats_v5.R')
 BAYESIAN_R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_bayesian_stats_v3.R')
 BAYESIAN_THRESHOLD_PPM = 3  # matches Stat Maker v1/v2's threshold_sbx default
 
-METHOD_INFO_TEXT = """STAT MAKER v3 - METHOD OVERVIEW
+METHOD_INFO_TEXT = """STAT MAKER v5 - METHOD OVERVIEW
 
 WHAT THIS PROGRAM DOES
 
@@ -83,12 +83,33 @@ STATISTICS METHOD (DESeq2)
   and none of that generalization (or its kde2d-based fold-change
   reweighting) is needed here.
 
-  The count matrix handed to DESeq2 is PPM, not raw counts. Because PPM is
-  already normalized for sequencing depth, DESeq2's own size-factor
-  normalization is bypassed (normalized=TRUE in the script below sets every
-  sample's size factor to 1) rather than normalizing twice. DESeq2 still
-  performs its own dispersion estimation and negative-binomial significance
-  testing on top of that.
+  The count matrix handed to DESeq2 is raw integer counts reconstructed
+  from PPM (K = round(PPM * TotalReads / 1e6), TotalReads read from each
+  gene_count_summary CSV's own header) - not PPM directly. Earlier versions
+  fed PPM straight in with normalized=TRUE, which bypassed DESeq2's own
+  size-factor normalization entirely (every sample's size factor forced to
+  1). v5 instead lets DESeq2 estimate its own size factors via the
+  "poscounts" method (estimateSizeFactors(dds, type="poscounts")), which
+  computes each gene's normalization reference from only that gene's
+  nonzero values - so a gene isn't excluded from the reference just because
+  it happens to be zero in one or two samples, unlike DESeq2's classic
+  median-of-ratios estimator (which requires nonzero everywhere).
+
+  This matters because Y2H selection drives most genes toward zero in the
+  Selected condition. Baits whose winning interactor doesn't fully
+  out-compete background prey ("low-crush" datasets) previously showed a
+  hit count that scaled with how incompletely the background was depleted,
+  not with real interaction signal - poscounts normalization removes most
+  of that effect (validated across a 73-dataset scan: correlation between
+  a bait's casualty rate and its hit count at p<0.01 dropped from -0.73 to
+  0.18, and the hit-count range compressed roughly 10-fold). The trade-off
+  is a modestly higher empirical false-positive rate on true-null
+  comparisons (~1.7% vs ~1.1% at nominal p<0.01) - judged acceptable given
+  the much larger systematic bias it removes, especially since real hits
+  are expected to be screened downstream for genuine absolute PPM
+  enrichment (Selected > Non-Selected), which independently catches the
+  "less de-enriched than vector, but not really enriched" pattern that
+  drove most low-crush false calls in the first place.
 
   Reported overdispersion is the mean overdispersion across the
   NON-SELECTED replicates only (a simple (Var-Mean)/Mean^2 estimate,
@@ -119,7 +140,7 @@ STATISTICS METHOD (Bayesian/MCMC, via JAGS)
   With just Bait1 + Vector supplied (no Bait2), the single-bait model
   (sModel1.jag) is used instead, reporting just AdjEnr/p.
 
-R SCRIPT (run_Y2H_enrichement_stats_v3.R)
+R SCRIPT (run_Y2H_enrichement_stats_v5.R)
 ----------------------------------------------------------------------
 """
 
@@ -248,7 +269,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.deepn_thread = None
         self.collate_thread = None
 
-        self.log("Stat Maker v3 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
+        self.log("Stat Maker v5 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
         self.log("Found Rscript: %s" % self.rscript_exe if self.rscript_exe else
                  "Rscript not found on this machine yet.")
         if self.jags_exe and self.jags_compatible:
@@ -576,14 +597,15 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             log_cb("WARNING: gene counts differ across files - they may not have been "
                    "processed with the same gene dictionary/list.")
 
-        log_cb("Loading PPM data (summed across scaffold-duplicate gene rows)...")
-        ppm_data = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
+        log_cb("Loading raw counts (PPM reconstructed to integer counts via TotalReads, "
+               "summed across scaffold-duplicate gene rows)...")
+        raw_count_data = {k: sc.load_raw_counts_summed(path) for k, path in csv_paths.items()}
 
         timestamp = datetime.now().strftime('%d%b%Y-%H%M%S')
         run_out_dir = os.path.join(out_folder, 'run_%s' % timestamp)
         os.makedirs(run_out_dir, exist_ok=True)
         collated_path = os.path.join(run_out_dir, 'collated_input.csv')
-        sc.build_collated_input_v3(ppm_data, run_out_dir, collated_path, has_bait2)
+        sc.build_collated_input_v5(raw_count_data, run_out_dir, collated_path, has_bait2)
         log_cb("Wrote %s%s" % (collated_path, " (Bait1 + Bait2 + Vector)" if has_bait2 else " (Bait1 + Vector only)"))
 
         log_cb("Running DESeq2 statistics (this can take a minute)...")
@@ -632,7 +654,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             'Vector1S': 'Vector_Selected_1', 'Vector2S': 'Vector_Selected_2',
         }
 
-        genes = sorted(ppm_data['Bait1S'].keys())
+        genes = sorted(raw_count_data['Bait1S'].keys())
         log_cb("Collating junction stats for %d genes..." % len(genes))
 
         out_name = 'stat_maker_%s.xlsx' % timestamp

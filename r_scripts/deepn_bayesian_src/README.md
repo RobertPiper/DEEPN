@@ -11,6 +11,20 @@ Base commit: 04d69d464f1b8f410d747fe416898ec22a8361ef (last upstream push
 
 Vendored: 2026-08-18
 
+**Package version: 1.5-4, not 1.6-0.** `DESCRIPTION` deliberately reports
+1.5-x (not the base commit's own 1.6-0), because `inst/model/sModel2.jag` -
+the file that actually determines this package's statistical output - was
+reverted to the 1.5-2 state, not kept at 1.6-0. Checked directly: the only
+diff anywhere in `R/` between the 1.5-2 tag and this base commit is one
+cosmetic plotting-argument rename in `sqrtAxis.R` (`lab=` -> `labels=`,
+unrelated to the statistics and not even reachable from the CLI pipeline);
+`psi` is referenced nowhere in `R/`, only inside the model file itself - so
+labeling the package 1.5-x accurately describes its actual behavior, and
+`packageVersion("deepn")` in R will now report a number that matches what
+it actually computes. The `-2` to `-4` bump is for the second, independent
+local fix below (`overdisp.R`/`applyFilter.R`) - not a claim that any
+version `1.5-3` or `1.5-4` ever existed upstream.
+
 ## Deliberate exception: inst/model/sModel2.jag is NOT from the base commit
 
 `inst/model/sModel2.jag` (the two-bait model - the one Stat Maker v3 uses
@@ -44,9 +58,46 @@ same comparison) and failed convergence on the same data.
 `inst/model/sModel1.jag` (single-bait model) was never touched by the
 1.6-0 commit and needed no change.
 
+## Deliberate exception: R/overdisp.R and R/applyFilter.R are NOT from the base commit
+
+`overdisp()` computes "Baseline" (Vector non-selected dispersion) and
+"Selected" (Vector selected dispersion) - printed as e.g. "Baseline (vector
+only)" and reported to the user as if they characterize Vector alone. In
+the base-commit code, both were computed from `Data$Vector` *after*
+`applyFilter()` had already trimmed it down using a joint vector+bait
+threshold filter (the non-selected side requires a gene to clear threshold
+in Vector's own mean AND every bait's non-selected sample simultaneously;
+the selected side requires clearing threshold in Vector OR any bait). That
+means these two "vector only" numbers silently depended on which bait
+happened to be attached to a given run - confirmed directly: the same
+Vector12/Vector13 pair, paired with six different baits (Rab11, Rab17,
+Rab19, Rab30, Rab31, Rab32), gave "Selected" dispersion ranging 0.46-0.56
+purely from this filtering artifact, since a bait's own selected-condition
+abundance was letting genes into the calculation that Vector's own selected
+replicates didn't actually support well. This value is not cosmetic - it's
+passed straight into the JAGS model as the shared negative-binomial
+dispersion for every selected-condition sample, Vector's and both baits'
+alike (`mcmc.R`'s `jData$omega`), so an artificially tight/inconsistent
+value there directly affects statistical confidence for every gene.
+
+Fixed by computing "Baseline"/"Selected" from `Data$Counts$Vector` - the
+original, full, unfiltered Vector counts that `applyFilter()` already
+preserves alongside its bait-filtered working copy - using a Vector-only
+threshold filter (same logic as the original filter, with every bait
+column removed). Verified: the same Vector12/Vector13 pair now gives an
+identical 0.0040/0.6259 regardless of which bait accompanies it, across
+all six datasets that use this pair. `omega[3]` ("baitEffect") is left
+untouched, still computed from the bait-joint-filtered view - that value
+is *supposed* to depend on the bait (it exists specifically to compare
+Vector's baseline against a bait's own baseline), so its bait-dependence
+is correct, not a bug. `applyFilter()` gained one line (`Data$threshold <-
+thresh`) purely so the fixed `overdisp()` can reuse the same threshold
+value without needing it passed in separately.
+
 Contains:
 - `R/` - the R functions (`analyzeDeepn`, `importFromDeepn`, `mcmc`/`runMCMC`,
-  `psm`, `summary-psm`, etc.) - unmodified from the base commit.
+  `psm`, `summary-psm`, etc.) - unmodified from the base commit, **except**
+  `overdisp.R` and `applyFilter.R` as described above.
 - `inst/model/sModel1.jag` - single-bait JAGS model - unmodified from the
   base commit.
 - `inst/model/sModel2.jag` - two-bait JAGS model - reverted to pre-1.6-0

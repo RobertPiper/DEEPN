@@ -27,6 +27,7 @@ applyFilter <- function(Data, thresh, base=TRUE) {
   if (length(pass) <= 1) warning("Fewer than 2 genes pass this filter")
   Data$Vector <- Data$Counts$Vector[pass,,]
   Data$Bait <- if (Data$multiBait) Data$Counts$Bait[pass,,] else Data$Counts$Bait[pass,]
+  Data$threshold <- thresh
   Data
 }
 rpm <- function(Data) {

@@ -1,10 +1,17 @@
 Package: deepn
 Title: Dynamic Enrichment for Evaluation of Protein Networks
-Version: 1.6-0
-Date: 2018-05-29
+Version: 1.5-4
+Date: 2017-05-25
 Author: Patrick Breheny
 Maintainer: Patrick Breheny <patrick-breheny@uiowa.edu>
 Description: This is the accompanying R package for the DEEPN project <https://github.com/emptyewer/DEEPN>.
+  Version pinned to 1.5-x (not 1.6-0) because inst/model/sModel2.jag - the
+  file that actually determines this package's statistical output - was
+  deliberately reverted to its 1.5-2 state (byte-identical) to remove the
+  psi parameter added in 1.6-0. Bumped to 1.5-4 for a second, independent
+  local fix: R/overdisp.R and R/applyFilter.R no longer let a bait
+  contaminate Vector's own "Baseline"/"Selected" dispersion estimates.
+  See README.md for the full rationale on both changes.
 BugReports: http://github.com/pbreheny/deepn/issues
 License: GPL-3
 SystemRequirements: JAGS (http://mcmc-jags.sourceforge.net)

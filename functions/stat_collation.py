@@ -210,6 +210,46 @@ def load_ppm_summed(csv_path):
     return ppm
 
 
+def load_raw_counts_summed(csv_path):
+    """Parse a gene_count_summary CSV and reconstruct approximate integer
+    read counts from its PPM column: K = round(PPM * TotalReads / 1e6),
+    matching the reproducibility-analysis convention (PPM is already
+    depth-normalized, so this recovers the pre-normalization count DESeq2
+    expects as raw input). Summed across duplicate gene-name rows, same as
+    load_ppm_summed(). TotalReads is read from the file's own header line
+    (" , TotalReads , <N>", two lines below "File:,...")."""
+    total_reads = None
+    ppm = {}
+    reading = False
+    with open(csv_path) as fh:
+        for line in fh:
+            if total_reads is None and "TotalReads" in line:
+                parts = line.split(",")
+                if len(parts) >= 3:
+                    try:
+                        total_reads = float(parts[2])
+                    except ValueError:
+                        pass
+                continue
+            if line.startswith("Chromosome"):
+                reading = True
+                continue
+            if not reading:
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+            gene = parts[1].strip()
+            try:
+                val = float(parts[2])
+            except ValueError:
+                continue
+            ppm[gene] = ppm.get(gene, 0.0) + val
+    if total_reads is None:
+        raise ValueError("Could not find 'TotalReads' in header of %s" % csv_path)
+    return {gene: int(round(v * total_reads / 1e6)) for gene, v in ppm.items()}
+
+
 def count_genes(csv_path):
     return len(load_ppm_summed(csv_path))
 
@@ -292,6 +332,53 @@ def build_collated_input_v3(ppm_data, output_dir, collated_path, has_bait2,
                     round(ppm_data['Vector2S'].get(g, 0.0), 6),
                     round(ppm_data['Vector1N'].get(g, 0.0), 6),
                     round(ppm_data['Vector2N'].get(g, 0.0), 6)]
+            w.writerow(row)
+    return collated_path
+
+
+def build_collated_input_v5(raw_count_data, output_dir, collated_path, has_bait2,
+                            p_val_thr=0.05, fold_change_thr='none'):
+    """v5: same layout as build_collated_input_v3(), but carries raw
+    integer counts (from load_raw_counts_summed()) instead of PPM, with
+    normalized='FALSE' so run_Y2H_enrichement_stats_v5.R actually computes
+    its own size factors (poscounts) instead of treating every sample as
+    pre-normalized (size factor 1). PPM was bypassing DESeq2's own
+    normalization entirely - this restores it as raw counts, matching the
+    only configuration poscounts was validated against.
+
+    raw_count_data keys: Bait1S, Bait1N, and (if has_bait2) Bait2S, Bait2N,
+    plus Vector1S, Vector1N, Vector2S, Vector2N - same shape as
+    build_collated_input_v3's ppm_data, just integer counts instead of PPM."""
+    genes = sorted(raw_count_data['Bait1S'].keys())
+    with open(collated_path, 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['data_column', 'note'])
+        w.writerow(['raw_count', 'Reconstructed from DEEPN gene_count_summary PPM (K = round(PPM * TotalReads / 1e6))'])
+        w.writerow([])
+        w.writerow(['CONFIG_START'])
+        w.writerow(['enrich_fold_change', 'enrich_p_val', 'normalized', 'output_directory',
+                    'sample_names_selected', 'sample_names_background'])
+        w.writerow([fold_change_thr, p_val_thr, 'FALSE', output_dir, 'Bait1S', 'Bait1N'])
+        if has_bait2:
+            w.writerow([fold_change_thr, p_val_thr, 'FALSE', output_dir, 'Bait2S', 'Bait2N'])
+        w.writerow([fold_change_thr, p_val_thr, 'FALSE', output_dir, 'Vector1S;Vector2S', 'Vector1N;Vector2N'])
+        w.writerow(['DATA_START'])
+        data_cols = ['GENE', 'Bait1S', 'Bait1N']
+        if has_bait2:
+            data_cols += ['Bait2S', 'Bait2N']
+        data_cols += ['Vector1S', 'Vector2S', 'Vector1N', 'Vector2N']
+        w.writerow(data_cols)
+        for g in genes:
+            row = [g,
+                   raw_count_data['Bait1S'].get(g, 0),
+                   raw_count_data['Bait1N'].get(g, 0)]
+            if has_bait2:
+                row += [raw_count_data['Bait2S'].get(g, 0),
+                        raw_count_data['Bait2N'].get(g, 0)]
+            row += [raw_count_data['Vector1S'].get(g, 0),
+                    raw_count_data['Vector2S'].get(g, 0),
+                    raw_count_data['Vector1N'].get(g, 0),
+                    raw_count_data['Vector2N'].get(g, 0)]
             w.writerow(row)
     return collated_path
 
