@@ -6,6 +6,7 @@ if '.app/Contents/MacOS' in sys.executable:
     os.chdir(os.path.join(os.path.dirname(sys.executable), '..', 'Resources'))
 
 import re
+import csv
 import time
 import glob
 from datetime import datetime
@@ -24,7 +25,7 @@ R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_enrichement_stats_v5.R')
 BAYESIAN_R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_bayesian_stats_v3.R')
 BAYESIAN_THRESHOLD_PPM = 3  # matches Stat Maker v1/v2's threshold_sbx default
 
-METHOD_INFO_TEXT = """STAT MAKER v5 - METHOD OVERVIEW
+METHOD_INFO_TEXT = """STAT MAKER v6 - METHOD OVERVIEW
 
 WHAT THIS PROGRAM DOES
 
@@ -316,6 +317,279 @@ class CollateThread(QtCore.QThread):
             self.finished_ok.emit(False, str(e))
 
 
+# ---------- hit-criteria filtering/sorting (v6) ----------
+# Pure functions (no self) - shared by the "Find" count preview and the
+# Export_Sorted_B1/B2 workbook writer, so both always agree.
+
+RAW_ENR_EPS = 0.05
+
+
+def _signed_fold(ratio):
+    """Linear ratio -> intuitive signed fold change: 2.0 -> +2 ("2x
+    enriched"), 0.5 -> -2 ("2x de-enriched"). Matches how a bench biologist
+    would describe fold change, unlike a plain ratio which reports both
+    directions as awkward decimals."""
+    return ratio if ratio >= 1 else -1.0 / ratio
+
+
+# _gene_passes_criteria/_sort_key_value operate on a `maps` dict - {'p':
+# {gene: val}, 'pval': {...}, 'infr': {...}, 'ratio': {...}, 'deseq2': {...},
+# 'enr': {...}, 'adjenr': {...}} - one bait's worth of per-gene values,
+# keyed the same way regardless of where they came from. This is what lets
+# the hit-criteria panel work identically whether the data is a run that
+# just finished (_build_bait_value_maps, computed from raw stats/bayesian_
+# stats/ppm/bqp) or a previously-exported Stat Maker file re-opened from
+# disk (_parse_sm_file, read straight back off that file's own columns -
+# no raw source data needed).
+
+def _gene_passes_criteria(gene, criteria, maps):
+    """criteria: dict with keys 'p', 'pval', 'infr', 'fold' - each None (or
+    0 for 'infr') means that threshold isn't set and never blocks a gene.
+    Once a threshold IS set, a gene missing the underlying value fails it
+    (can't confirm it clears a bar that isn't there)."""
+    p = criteria.get('p')
+    if p is not None:
+        val = maps['p'].get(gene)
+        if val is None or not (val > p):
+            return False
+
+    pval = criteria.get('pval')
+    if pval is not None:
+        val = maps['pval'].get(gene)
+        if val is None or not (val <= pval):
+            return False
+
+    infr = criteria.get('infr') or 0
+    if infr:
+        val = maps['infr'].get(gene, 0)
+        if not (val >= infr):
+            return False
+
+    fold = criteria.get('fold')
+    if fold is not None:
+        ratio = maps['ratio'].get(gene)
+        if ratio is None or not (_signed_fold(ratio) > fold):
+            return False
+
+    return True
+
+
+def _sort_key_value(gene, sort_key, maps):
+    """Higher = more enriched, sorted descending. Missing values sink to
+    the bottom of the passing block rather than erroring."""
+    val = maps[sort_key].get(gene)
+    return val if val is not None else float('-inf')
+
+
+def _as_float_or_none(val):
+    if val is None or val == 'NA':
+        return None
+    return float(val)
+
+
+def _default_junction_fn(bqp_data):
+    """junction_fn(dataset_key, gene) -> the same dict get_junction_stats()
+    returns, backed by real .bqp data - the fresh-run source."""
+    return lambda dkey, gene: sc.get_junction_stats(bqp_data.get(dkey, {}), gene)
+
+
+def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, junction_fn):
+    """Builds one bait's per-gene value maps for the hit-criteria panel.
+    junction_fn(dataset_key, gene) -> percentage dict - either backed by
+    real .bqp data (fresh run, _default_junction_fn) or by a loaded general
+    .csv's own flat junction columns (_flat_junction_fn) - both produce
+    identical maps either way."""
+    suffix = 'bait%d' % bait_num
+    sel_key, non_key = 'Bait%dS' % bait_num, 'Bait%dN' % bait_num
+    maps = {k: {} for k in ('p', 'pval', 'infr', 'ratio', 'deseq2', 'enr', 'adjenr')}
+    for g in genes:
+        brow = bayesian_stats.get(g, {})
+        srow = stats.get(g, {})
+        maps['p'][g] = _as_float_or_none(brow.get('pBait%d_Vec' % bait_num))
+        maps['pval'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector' % suffix))
+        maps['infr'][g] = junction_fn(sel_key, g)['in_frame']
+        p_sel = ppm_data.get(sel_key, {}).get(g, 0.0)
+        p_non = ppm_data.get(non_key, {}).get(g, 0.0)
+        maps['ratio'][g] = (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS)
+        maps['deseq2'][g] = _as_float_or_none(srow.get('log2FoldChange_%s_vs_vector' % suffix))
+        maps['enr'][g] = _as_float_or_none(brow.get('Enr%d' % bait_num))
+        maps['adjenr'][g] = _as_float_or_none(brow.get('AdjEnr%d' % bait_num))
+    return maps
+
+
+# The general .csv - a full, self-contained snapshot of one run's computed
+# results: per-dataset ppm, per-dataset junction percentages (flattened
+# from .bqp - the raw pickle objects aren't stored, just what
+# get_junction_stats() derives from them), every DESeq2 stats column, and
+# every Bayesian stats column. Rich enough that _write_workbook produces
+# the exact same full report from a reloaded file as from a fresh run -
+# the .xlsx is always generated FROM this .csv's data, whether that data
+# was just computed or loaded back later. Deliberately does NOT carry the
+# original gene_count_summary/.bqp file paths - those can change machine
+# to machine, and re-running the actual DESeq2/MCMC computation from a
+# reloaded file isn't supported (see load_sm_file_clicked).
+STATS_DATASET_KEYS = ['Bait1S', 'Bait1N', 'Bait2S', 'Bait2N', 'Vector1S', 'Vector1N', 'Vector2S', 'Vector2N']
+JUNCTION_CATEGORIES = ['frame_orf', 'upstream', 'in_orf', 'downstream',
+                       'in_frame', 'not_in_frame', 'backwards', 'intron']
+
+
+def _write_general_csv(path, name, genes, has_bait2, ppm_data, stats, bayesian_stats, bqp_data,
+                       overdispersion, bayes_overdispersion, log_cb=None):
+    dataset_keys = [k for k in STATS_DATASET_KEYS if has_bait2 or not k.startswith('Bait2')]
+    stats_fields = sorted({key for row in stats.values() for key in row})
+    bayes_fields = sorted({key for row in bayesian_stats.values() for key in row})
+
+    with open(path, 'w', newline='') as fh:
+        fh.write('#name,%s\n' % name)
+        fh.write('#has_bait2,%s\n' % has_bait2)
+        fh.write('#overdispersion,%s\n' % ('' if overdispersion is None else overdispersion))
+        fh.write('#bayes_vector_nonselect,%s\n' % bayes_overdispersion.get('vector_nonselect', ''))
+        fh.write('#bayes_vector_bait_nonselect,%s\n' % bayes_overdispersion.get('vector_bait_nonselect', ''))
+        fh.write('#bayes_vector_select,%s\n' % bayes_overdispersion.get('vector_select', ''))
+        fh.write('#stats_fields,%s\n' % ';'.join(stats_fields))
+        fh.write('#bayes_fields,%s\n' % ';'.join(bayes_fields))
+        fieldnames = (['Gene'] + ['ppm_%s' % k for k in dataset_keys] +
+                     ['jn_%s_%s' % (k, c) for k in dataset_keys for c in JUNCTION_CATEGORIES] +
+                     stats_fields + bayes_fields)
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
+        w.writeheader()
+        for i, g in enumerate(genes):
+            row = {'Gene': g}
+            for k in dataset_keys:
+                row['ppm_%s' % k] = ppm_data.get(k, {}).get(g, 0.0)
+                gstat = sc.get_junction_stats(bqp_data.get(k, {}), g)
+                for c in JUNCTION_CATEGORIES:
+                    row['jn_%s_%s' % (k, c)] = gstat.get(c, 0)
+            srow = stats.get(g, {})
+            row.update({f: srow.get(f, '') for f in stats_fields})
+            brow = bayesian_stats.get(g, {})
+            row.update({f: brow.get(f, '') for f in bayes_fields})
+            w.writerow(row)
+            if log_cb and i and i % 5000 == 0:
+                log_cb("  wrote %d/%d genes..." % (i, len(genes)))
+
+
+def _read_general_csv(path):
+    """Reverses _write_general_csv into exactly what _write_workbook (and
+    _build_bait_value_maps) need: ppm_data, stats, bayesian_stats, and a
+    junction_fn backed by the flattened jn_* columns instead of real .bqp
+    data."""
+    meta = {}
+    with open(path, newline='') as fh:
+        pos = fh.tell()
+        line = fh.readline()
+        while line.startswith('#'):
+            key, _, val = line[1:].rstrip('\n').partition(',')
+            meta[key] = val
+            pos = fh.tell()
+            line = fh.readline()
+        fh.seek(pos)
+        rows = list(csv.DictReader(fh))
+
+    if 'has_bait2' not in meta:
+        raise ValueError("Couldn't find the expected header - is this a Stat Maker general .csv file?")
+    has_bait2 = meta['has_bait2'] == 'True'
+    name = meta.get('name') or os.path.basename(path)
+    overdispersion = float(meta['overdispersion']) if meta.get('overdispersion') else None
+    bayes_overdispersion = {}
+    for k in ('vector_nonselect', 'vector_bait_nonselect', 'vector_select'):
+        v = meta.get('bayes_%s' % k, '')
+        if v:
+            bayes_overdispersion[k] = float(v)
+    stats_fields = [f for f in meta.get('stats_fields', '').split(';') if f]
+    bayes_fields = [f for f in meta.get('bayes_fields', '').split(';') if f]
+
+    dataset_keys = [k for k in STATS_DATASET_KEYS if has_bait2 or not k.startswith('Bait2')]
+    genes = []
+    ppm_data = {k: {} for k in dataset_keys}
+    junction_flat = {}
+    stats, bayesian_stats = {}, {}
+    for row in rows:
+        g = row.get('Gene')
+        if not g:
+            continue
+        genes.append(g)
+        for k in dataset_keys:
+            v = row.get('ppm_%s' % k, '')
+            ppm_data[k][g] = float(v) if v not in ('', None) else 0.0
+            pct = {}
+            for c in JUNCTION_CATEGORIES:
+                jv = row.get('jn_%s_%s' % (k, c), '')
+                pct[c] = float(jv) if jv not in ('', None) else 0.0
+            junction_flat[(k, g)] = pct
+        stats[g] = {f: row.get(f, '') for f in stats_fields}
+        bayesian_stats[g] = {f: row.get(f, '') for f in bayes_fields}
+
+    def junction_fn(dkey, gene):
+        return junction_flat.get((dkey, gene), {c: 0.0 for c in JUNCTION_CATEGORIES})
+
+    dataset_labels = {
+        'Bait1N': 'Bait1_Non-Selected', 'Bait1S': 'Bait1_Selected',
+        'Bait2N': 'Bait2_Non-Selected', 'Bait2S': 'Bait2_Selected',
+        'Vector1N': 'Vector_Non-Selected_1', 'Vector2N': 'Vector_Non-Selected_2',
+        'Vector1S': 'Vector_Selected_1', 'Vector2S': 'Vector_Selected_2',
+    }
+    csv_paths = {k: '(loaded from %s)' % os.path.basename(path) for k in dataset_keys}
+
+    return {
+        'name': name, 'genes': genes, 'has_bait2': has_bait2, 'src_path': path,
+        'ppm_data': ppm_data, 'stats': stats, 'bayesian_stats': bayesian_stats,
+        'junction_fn': junction_fn, 'csv_paths': csv_paths, 'dataset_labels': dataset_labels,
+        'overdispersion': overdispersion, 'bayes_overdispersion': bayes_overdispersion,
+    }
+
+
+class ClickThroughSelector(QtWidgets.QWidget):
+    """A label flanked by prev/next buttons, cycling through a fixed list
+    of values (clamped at both ends, not wrapping). values[0] is always
+    the "no filter" state; display_fn formats a value for the label."""
+
+    changed = QtCore.pyqtSignal()
+
+    def __init__(self, values, display_fn, parent=None):
+        super(ClickThroughSelector, self).__init__(parent)
+        self.values = values
+        self.display_fn = display_fn
+        self.index = 0
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.prev_btn = QtWidgets.QPushButton('◀')
+        self.next_btn = QtWidgets.QPushButton('▶')
+        self.prev_btn.setFixedWidth(24)
+        self.next_btn.setFixedWidth(24)
+        self.value_label = QtWidgets.QLabel()
+        self.value_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.value_label.setMinimumWidth(80)
+        layout.addWidget(self.prev_btn)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.next_btn)
+
+        self.prev_btn.clicked.connect(self._prev)
+        self.next_btn.clicked.connect(self._next)
+        self._refresh()
+
+    def _prev(self):
+        if self.index > 0:
+            self.index -= 1
+            self._refresh()
+
+    def _next(self):
+        if self.index < len(self.values) - 1:
+            self.index += 1
+            self._refresh()
+
+    def _refresh(self):
+        self.value_label.setText(self.display_fn(self.values[self.index]))
+        self.prev_btn.setEnabled(self.index > 0)
+        self.next_btn.setEnabled(self.index < len(self.values) - 1)
+        self.changed.emit()
+
+    @property
+    def value(self):
+        return self.values[self.index]
+
+
 class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     def __init__(self, *args):
         super(Stat_Maker_Gui, self).__init__(*args)
@@ -366,8 +640,17 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.jags_download_thread = None
         self.deepn_thread = None
         self.collate_thread = None
+        self._last_run = None
+        # Whichever data source Export.csv/Find/Export_Sorted_B1/B2 all
+        # operate on - {'kind': 'run', ...} for a just-completed run (real
+        # bqp_data), or {'kind': 'file', ...} for a loaded general .csv
+        # (flattened junction_fn instead) - see _source_write_args, which
+        # is what makes _write_workbook work identically either way.
+        self._active_source = None
 
-        self.log("Stat Maker v5 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
+        self._build_export_panel()
+
+        self.log("Stat Maker v6 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
         self.log("Found Rscript: %s" % self.rscript_exe if self.rscript_exe else
                  "Rscript not found on this machine yet.")
         if self.jags_exe and self.jags_compatible:
@@ -671,6 +954,28 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self._update_collate_enabled()
         if ok:
             self.statusbar.showMessage("Done.", 8000)
+            run = self._last_run
+            junction_fn = _default_junction_fn(run['bqp_data'])
+            self._active_source = {
+                'kind': 'run', 'genes': run['genes'], 'has_bait2': run['has_bait2'],
+                'out_folder': run['out_folder'],
+                'maps1': _build_bait_value_maps(1, run['genes'], run['ppm_data'], run['stats'],
+                                                run['bayesian_stats'], junction_fn),
+                'maps2': (_build_bait_value_maps(2, run['genes'], run['ppm_data'], run['stats'],
+                                                 run['bayesian_stats'], junction_fn)
+                         if run['has_bait2'] else None),
+            }
+            self.export_default_btn.setEnabled(True)
+            self.export_data_btn.setEnabled(True)
+            self.b1_criteria['find_btn'].setEnabled(True)
+            self.b1_criteria['export_btn'].setEnabled(True)
+            self.b2_criteria['find_btn'].setEnabled(run['has_bait2'])
+            self.b2_criteria['export_btn'].setEnabled(run['has_bait2'])
+            self.bait2_criteria_group.setVisible(run['has_bait2'])
+            self.b1_count_label.setText('')
+            self.b2_count_label.setText('')
+            self.source_label.setText("Active source: just-completed run")
+            self.export_name_edit.setText(datetime.now().strftime('stat_maker_%d%b%Y-%H%M%S'))
         else:
             self.statusbar.showMessage("Failed - see log.", 8000)
             self.log("ERROR: %s" % err)
@@ -753,10 +1058,22 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         genes = sorted(raw_count_data['Bait1S'].keys())
         log_cb("Collating junction stats for %d genes..." % len(genes))
 
+        # Cached so the Export/Find/Export_Sorted_* actions in the hit-
+        # criteria panel can reuse this run's results without re-running
+        # DESeq2/MCMC (which is the expensive, several-minutes part).
+        self._last_run = {
+            'out_folder': out_folder, 'csv_paths': csv_paths, 'dataset_labels': dataset_labels,
+            'overdispersion': overdispersion, 'bayes_overdispersion': bayes_overdispersion,
+            'stats': stats, 'bayesian_stats': bayesian_stats, 'bqp_data': bqp_data,
+            'genes': genes, 'has_bait2': has_bait2,
+            'ppm_data': {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()},
+        }
+
         out_name = 'stat_maker_%s.xlsx' % timestamp
         out_path = os.path.join(out_folder, out_name)
         self._write_workbook(out_path, csv_paths, dataset_labels, overdispersion,
-                             bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb)
+                             bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb,
+                             ppm_data=self._last_run['ppm_data'])
         log_cb("Wrote %s" % out_path)
 
     # ---------- output workbook ----------
@@ -767,7 +1084,23 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # pivot table) actually attach to.
 
     def _write_workbook(self, out_path, csv_paths, dataset_labels, overdispersion,
-                        bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb):
+                        bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb,
+                        sort_spec=None, criteria=None, ppm_data=None, junction_fn=None):
+        """sort_spec/criteria: both None for the plain, unsorted/unfiltered
+        export. Otherwise sort_spec=(bait_num, sort_key) with sort_key in
+        ('deseq2','enr','adjenr'), and criteria=that bait's threshold dict
+        (see _gene_passes_criteria) - genes passing all of criteria's set
+        thresholds are pulled to the top, sorted descending by sort_key,
+        and shaded light orange; every other gene follows in its existing
+        (alphabetical) order, unshaded.
+
+        junction_fn(dataset_key, gene) -> get_junction_stats()-shaped dict:
+        defaults to reading real bqp_data, but a workbook rebuilt from a
+        loaded general .csv (which only has flattened junction
+        percentages, not raw .bqp objects) supplies its own instead - see
+        _read_general_csv."""
+        if junction_fn is None:
+            junction_fn = _default_junction_fn(bqp_data)
         workbook = xls.Workbook(out_path)
         ws = workbook.add_worksheet('results')
 
@@ -814,6 +1147,11 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         # the displayed text is rounded.
         fmt_num2 = workbook.add_format({'num_format': '0.00'})
         fmt_num2_gray = workbook.add_format({'num_format': '0.00', 'bg_color': '#D9D9D9'})
+        # Full-row highlight for genes passing a hit-criteria filter
+        # (sort_spec/criteria below) - substituted in place of fmt_num2/
+        # fmt_gene for every cell in a passing gene's row.
+        fmt_num2_orange = workbook.add_format({'num_format': '0.00', 'bg_color': '#FCE4C0'})
+        fmt_gene_orange = workbook.add_format({'bold': True, 'bg_color': '#FCE4C0'})
 
         row = 0
         for k in csv_paths:
@@ -842,8 +1180,11 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                     ws.write_number(row, 1, value)
                 row += 1
 
-        # PPM for every dataset key, loaded once (not per-gene).
-        ppm_data = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
+        # PPM for every dataset key, loaded once (not per-gene) - unless
+        # the caller already has it cached (Export_Sorted_*/Export.csv all
+        # reuse the same run's ppm_data instead of reloading every click).
+        if ppm_data is None:
+            ppm_data = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
 
         # ---- CRUSH table: how hard each individual Sel/Non pair "crushed"
         # its own prey pool by itself, independent of any bait-vs-vector
@@ -1051,62 +1392,81 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             ws.merge_range(mid_row, start_col, mid_row, col - 1, dataset_labels[k], fmt_group_junction)
 
         last_col = col - 1
+
+        # Hit-criteria filter/sort: genes passing all of criteria's set
+        # thresholds move to the top, sorted descending by sort_key, and
+        # get shaded; everyone else follows in the existing gene order.
+        highlighted = set()
+        gene_order = genes
+        if sort_spec is not None and criteria is not None:
+            bait_num, sort_key = sort_spec
+            maps = _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, junction_fn)
+            passing = [g for g in genes if _gene_passes_criteria(g, criteria, maps)]
+            passing.sort(key=lambda g: _sort_key_value(g, sort_key, maps), reverse=True)
+            highlighted = set(passing)
+            remaining = [g for g in genes if g not in highlighted]
+            gene_order = passing + remaining
+            log_cb("Hit criteria: %d of %d genes passed (Bait%d, sorted by %s)"
+                   % (len(passing), len(genes), bait_num, sort_key))
+
         data_row = field_row + 1
-        for gene in genes:
-            ws.write(data_row, 0, gene)
+        for gene in gene_order:
+            is_hit = gene in highlighted
+            num_fmt = fmt_num2_orange if is_hit else fmt_num2
+            ws.write(data_row, 0, gene, fmt_gene_orange if is_hit else None)
             srow = stats.get(gene, {})
             brow = bayesian_stats.get(gene, {})
 
             for bait_label, kind, extra, wcol in bait_field_cols:
                 sel_key, non_key = '%sS' % bait_label, '%sN' % bait_label
                 if kind == 'ppm_non':
-                    ws.write_number(data_row, wcol, ppm_data.get(non_key, {}).get(gene, 0.0), fmt_num2)
+                    ws.write_number(data_row, wcol, ppm_data.get(non_key, {}).get(gene, 0.0), num_fmt)
                 elif kind == 'ppm_sel':
-                    ws.write_number(data_row, wcol, ppm_data.get(sel_key, {}).get(gene, 0.0), fmt_num2)
+                    ws.write_number(data_row, wcol, ppm_data.get(sel_key, {}).get(gene, 0.0), num_fmt)
                 elif kind == 'raw_enr':
                     p_sel = ppm_data.get(sel_key, {}).get(gene, 0.0)
                     p_non = ppm_data.get(non_key, {}).get(gene, 0.0)
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), fmt_num2)
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), num_fmt)
                 elif kind == 'bayesian':
                     # Leave genuinely blank (not '') when missing - see the
                     # sorting-order note further down for why this matters.
                     if extra in brow and brow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(brow[extra]), fmt_num2)
+                        ws.write_number(data_row, wcol, float(brow[extra]), num_fmt)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(srow[extra]), fmt_num2)
+                        ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
                 elif kind == 'junction':
                     dkey, jkey = extra
-                    gstat = sc.get_junction_stats(bqp_data[dkey], gene)
-                    ws.write_number(data_row, wcol, gstat[jkey], fmt_num2)
+                    gstat = junction_fn(dkey, gene)
+                    ws.write_number(data_row, wcol, gstat[jkey], num_fmt)
 
             for kind, extra, wcol in vector_field_cols:
                 if kind == 'ppm_non':
-                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'N'), fmt_num2)
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'N'), num_fmt)
                 elif kind == 'ppm_sel':
-                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'S'), fmt_num2)
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'S'), num_fmt)
                 elif kind == 'raw_enr':
                     p_sel = vector_mean_ppm(gene, 'S')
                     p_non = vector_mean_ppm(gene, 'N')
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), fmt_num2)
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), num_fmt)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(srow[extra]), fmt_num2)
+                        ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
                 elif kind == 'junction':
                     cond, jkey = extra
-                    d1 = sc.get_junction_stats(bqp_data['Vector1' + cond], gene)
-                    d2 = sc.get_junction_stats(bqp_data['Vector2' + cond], gene)
-                    ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2, fmt_num2)
+                    d1 = junction_fn('Vector1' + cond, gene)
+                    d2 = junction_fn('Vector2' + cond, gene)
+                    ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2, num_fmt)
 
             for stats_key, wcol in stat_field_cols:
                 if stats_key in srow and srow[stats_key] != 'NA':
-                    ws.write_number(data_row, wcol, float(srow[stats_key]), fmt_num2)
+                    ws.write_number(data_row, wcol, float(srow[stats_key]), num_fmt)
             for fld, wcol in bayesian_field_cols:
                 if fld in brow and brow[fld] != 'NA':
-                    ws.write_number(data_row, wcol, float(brow[fld]), fmt_num2)
+                    ws.write_number(data_row, wcol, float(brow[fld]), num_fmt)
             for k, jc, wcol in junction_field_cols:
-                gstat = sc.get_junction_stats(bqp_data[k], gene)
-                ws.write_number(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)], fmt_num2)
+                gstat = junction_fn(k, gene)
+                ws.write_number(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)], num_fmt)
 
             data_row += 1
 
@@ -1114,6 +1474,237 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         ws.autofilter(field_row, 0, data_row - 1, last_col)
         ws.freeze_panes(data_row - len(genes), 1)
         workbook.close()
+
+    # ---------- hit-criteria panel (v6) ----------
+
+    def _build_export_panel(self):
+        """Third column, to the right of the existing file-drop panel -
+        built in Python rather than the .ui file since it's dynamic and
+        repeated per-bait. The criteria widgets (clickers, sort combo) are
+        always interactive - there's no reason to block setting up
+        criteria before a run exists. Only the actions that need actual
+        results (Export.csv, Find, Export_Sorted_B1/B2) start disabled;
+        _collate_finished enables them (and shows/hides the Bait2 section)
+        once a run has completed."""
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        self.export_default_btn = QtWidgets.QPushButton('Export.csv')
+        self.export_default_btn.setEnabled(False)
+        self.export_default_btn.clicked.connect(self.export_default_clicked)
+        layout.addWidget(self.export_default_btn)
+
+        layout.addWidget(QtWidgets.QLabel('Export name:'))
+        self.export_name_edit = QtWidgets.QLineEdit()
+        layout.addWidget(self.export_name_edit)
+        self.export_data_btn = QtWidgets.QPushButton('Export Data (.csv)')
+        self.export_data_btn.setEnabled(False)
+        self.export_data_btn.clicked.connect(self.export_data_csv_clicked)
+        layout.addWidget(self.export_data_btn)
+
+        load_btn = QtWidgets.QPushButton('Load SM File...')
+        load_btn.clicked.connect(self.load_sm_file_clicked)
+        layout.addWidget(load_btn)
+        self.source_label = QtWidgets.QLabel('Active source: (none yet)')
+        self.source_label.setWordWrap(True)
+        layout.addWidget(self.source_label)
+
+        self.b1_criteria, b1_group = self._build_criteria_section('Bait1')
+        self.b2_criteria, self.bait2_criteria_group = self._build_criteria_section('Bait2')
+        layout.addWidget(b1_group)
+        layout.addWidget(self.bait2_criteria_group)
+        layout.addStretch(1)
+
+        self.export_panel = panel
+        self.mainLayout.addWidget(panel)
+
+    def _build_criteria_section(self, bait_label):
+        bait_num = 1 if bait_label == 'Bait1' else 2
+        group = QtWidgets.QGroupBox('%s Hit Criteria' % bait_label)
+        layout = QtWidgets.QVBoxLayout(group)
+
+        def row(label_text, selector):
+            r = QtWidgets.QHBoxLayout()
+            r.addWidget(QtWidgets.QLabel(label_text))
+            r.addWidget(selector)
+            layout.addLayout(r)
+
+        p_sel = ClickThroughSelector(
+            [None] + [round(0.1 * i, 1) for i in range(1, 10)],
+            lambda v: 'none' if v is None else 'P > %.1f' % v)
+        pval_sel = ClickThroughSelector(
+            [None, 0.1, 0.01, 0.001, 0.0001],
+            lambda v: 'none' if v is None else 'p ≤ %g' % v)
+        infr_sel = ClickThroughSelector(
+            list(range(0, 101)),
+            lambda v: 'none' if v == 0 else '≥ %d%%' % v)
+        fold_sel = ClickThroughSelector(
+            [None, -2, 0, 2, 5, 10],
+            lambda v: 'none' if v is None else '> %+gfold' % v)
+        sort_combo = QtWidgets.QComboBox()
+        sort_combo.addItems(['DESeq2 (%s vs Vector)' % bait_label, 'Enr%d' % bait_num, 'AdjEnr%d' % bait_num])
+
+        row('P (probability):', p_sel)
+        row('p-value:', pval_sel)
+        row('% in-frame:Forward:', infr_sel)
+        row('Positive enrichment fold:', fold_sel)
+        row('Sort by:', sort_combo)
+
+        find_row = QtWidgets.QHBoxLayout()
+        find_btn = QtWidgets.QPushButton('Find')
+        count_label = QtWidgets.QLabel('')
+        count_font = count_label.font()
+        count_font.setPointSize(count_font.pointSize() + 6)
+        count_font.setBold(True)
+        count_label.setFont(count_font)
+        find_row.addWidget(find_btn)
+        find_row.addWidget(count_label)
+        find_row.addStretch(1)
+        layout.addLayout(find_row)
+
+        find_btn.setEnabled(False)
+        export_btn = QtWidgets.QPushButton('Export_Sorted_B%d' % bait_num)
+        export_btn.setEnabled(False)
+        layout.addWidget(export_btn)
+
+        widgets = {
+            'p': p_sel, 'pval': pval_sel, 'infr': infr_sel, 'fold': fold_sel,
+            'sort_combo': sort_combo, 'find_btn': find_btn, 'count_label': count_label,
+            'export_btn': export_btn,
+        }
+        if bait_num == 1:
+            self.b1_count_label = count_label
+            find_btn.clicked.connect(self.find_b1_clicked)
+            export_btn.clicked.connect(self.export_sorted_b1_clicked)
+        else:
+            self.b2_count_label = count_label
+            find_btn.clicked.connect(self.find_b2_clicked)
+            export_btn.clicked.connect(self.export_sorted_b2_clicked)
+        return widgets, group
+
+    @staticmethod
+    def _sort_key_from_combo(combo):
+        return ['deseq2', 'enr', 'adjenr'][combo.currentIndex()]
+
+    def _criteria_dict(self, widgets):
+        return {'p': widgets['p'].value, 'pval': widgets['pval'].value,
+               'infr': widgets['infr'].value, 'fold': widgets['fold'].value}
+
+    def _matching_genes(self, bait_num, widgets):
+        source = self._active_source
+        maps = source['maps1'] if bait_num == 1 else source['maps2']
+        criteria = self._criteria_dict(widgets)
+        return [g for g in source['genes'] if _gene_passes_criteria(g, criteria, maps)]
+
+    @QtCore.pyqtSlot()
+    def find_b1_clicked(self):
+        self.b1_count_label.setText(str(len(self._matching_genes(1, self.b1_criteria))))
+
+    @QtCore.pyqtSlot()
+    def find_b2_clicked(self):
+        self.b2_count_label.setText(str(len(self._matching_genes(2, self.b2_criteria))))
+
+    def _source_write_args(self, source):
+        """Common args _write_workbook needs, regardless of whether
+        `source` came from a fresh run (self._last_run, real bqp_data) or
+        a loaded general .csv (_read_general_csv, flattened junction_fn)."""
+        if source['kind'] == 'run':
+            run = self._last_run
+            return dict(csv_paths=run['csv_paths'], dataset_labels=run['dataset_labels'],
+                       overdispersion=run['overdispersion'], bayes_overdispersion=run['bayes_overdispersion'],
+                       stats=run['stats'], bayesian_stats=run['bayesian_stats'], bqp_data=run['bqp_data'],
+                       ppm_data=run['ppm_data'], junction_fn=_default_junction_fn(run['bqp_data']))
+        return dict(csv_paths=source['csv_paths'], dataset_labels=source['dataset_labels'],
+                   overdispersion=source['overdispersion'], bayes_overdispersion=source['bayes_overdispersion'],
+                   stats=source['stats'], bayesian_stats=source['bayesian_stats'], bqp_data={},
+                   ppm_data=source['ppm_data'], junction_fn=source['junction_fn'])
+
+    @QtCore.pyqtSlot()
+    def export_default_clicked(self):
+        source = self._active_source
+        args = self._source_write_args(source)
+        timestamp = datetime.now().strftime('%d%b%Y-%H%M%S')
+        out_name = 'stat_maker_%s.xlsx' % timestamp
+        out_path = os.path.join(source.get('out_folder') or os.path.dirname(source.get('src_path', '.')), out_name)
+        self._write_workbook(out_path, args['csv_paths'], args['dataset_labels'], args['overdispersion'],
+                             args['bayes_overdispersion'], args['stats'], args['bayesian_stats'], args['bqp_data'],
+                             source['genes'], source['has_bait2'], self.log,
+                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'])
+        self.log("Wrote %s" % out_path)
+        self.statusbar.showMessage("Wrote %s" % out_name, 8000)
+
+    def _export_sorted(self, bait_num, widgets, filename_prefix):
+        source = self._active_source
+        sort_key = self._sort_key_from_combo(widgets['sort_combo'])
+        criteria = self._criteria_dict(widgets)
+        args = self._source_write_args(source)
+        timestamp = datetime.now().strftime('%d%b%Y-%H%M%S')
+        out_name = '%sstat_maker_%s.xlsx' % (filename_prefix, timestamp)
+        out_path = os.path.join(source.get('out_folder') or os.path.dirname(source.get('src_path', '.')), out_name)
+        self._write_workbook(out_path, args['csv_paths'], args['dataset_labels'], args['overdispersion'],
+                             args['bayes_overdispersion'], args['stats'], args['bayesian_stats'], args['bqp_data'],
+                             source['genes'], source['has_bait2'], self.log,
+                             sort_spec=(bait_num, sort_key), criteria=criteria,
+                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'])
+        self.log("Wrote %s" % out_path)
+        self.statusbar.showMessage("Wrote %s" % out_name, 8000)
+
+    @QtCore.pyqtSlot()
+    def export_sorted_b1_clicked(self):
+        self._export_sorted(1, self.b1_criteria, 'SORT1_')
+
+    @QtCore.pyqtSlot()
+    def export_sorted_b2_clicked(self):
+        self._export_sorted(2, self.b2_criteria, 'SORT2_')
+
+    @QtCore.pyqtSlot()
+    def export_data_csv_clicked(self):
+        """The general .csv - a full, self-contained snapshot of the
+        current run's computed results (see _write_general_csv). This is
+        what Load SM File... reads back later; the .xlsx exports are
+        always generated from this same data, whether fresh or reloaded."""
+        run = self._last_run
+        if run is None:
+            return
+        name = self.export_name_edit.text().strip() or datetime.now().strftime('stat_maker_%d%b%Y-%H%M%S')
+        out_path = os.path.join(run['out_folder'], name + '.csv')
+        self.log("Writing general .csv (%d genes)..." % len(run['genes']))
+        _write_general_csv(out_path, name, run['genes'], run['has_bait2'], run['ppm_data'],
+                           run['stats'], run['bayesian_stats'], run['bqp_data'],
+                           run['overdispersion'], run['bayes_overdispersion'], log_cb=self.log)
+        self.log("Wrote %s" % out_path)
+        self.statusbar.showMessage("Wrote %s" % os.path.basename(out_path), 8000)
+
+    @QtCore.pyqtSlot()
+    def load_sm_file_clicked(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Stat Maker Data", self.directory, "CSV files (*.csv)")
+        if not path:
+            return
+        try:
+            parsed = _read_general_csv(path)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Load Failed", str(e))
+            return
+        parsed['kind'] = 'file'
+        parsed['out_folder'] = os.path.dirname(path)
+        parsed['maps1'] = _build_bait_value_maps(1, parsed['genes'], parsed['ppm_data'], parsed['stats'],
+                                                  parsed['bayesian_stats'], parsed['junction_fn'])
+        parsed['maps2'] = (_build_bait_value_maps(2, parsed['genes'], parsed['ppm_data'], parsed['stats'],
+                                                   parsed['bayesian_stats'], parsed['junction_fn'])
+                          if parsed['has_bait2'] else None)
+        self._active_source = parsed
+        self.export_default_btn.setEnabled(True)
+        self.b1_criteria['find_btn'].setEnabled(True)
+        self.b1_criteria['export_btn'].setEnabled(True)
+        self.b2_criteria['find_btn'].setEnabled(parsed['has_bait2'])
+        self.b2_criteria['export_btn'].setEnabled(parsed['has_bait2'])
+        self.bait2_criteria_group.setVisible(parsed['has_bait2'])
+        self.b1_count_label.setText('')
+        self.b2_count_label.setText('')
+        self.source_label.setText("Active source: %s" % parsed['name'])
+        self.log("Loaded %s (%d genes%s)"
+                 % (path, len(parsed['genes']), ", Bait2 present" if parsed['has_bait2'] else ""))
 
     @QtCore.pyqtSlot()
     def method_info_clicked(self):

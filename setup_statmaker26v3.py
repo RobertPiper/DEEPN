@@ -15,7 +15,7 @@ from setuptools import setup
 APP_NAME = 'StatMaker_26v3'
 
 APP = [{
-    'script': 'stat_maker_gui_v5.py',
+    'script': 'stat_maker_gui_v6.py',
     'plist': {
         'CFBundleName': APP_NAME,
         'CFBundleDisplayName': 'Stat Maker',

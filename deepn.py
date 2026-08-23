@@ -1099,7 +1099,7 @@ class DEEPN_Launcher(QtWidgets.QMainWindow, form_class):
 
     @QtCore.pyqtSlot()
     def on_stat_maker_btn_clicked(self):
-        self._launch_viewer_tool(self.stat_maker_btn, 'stat_maker_gui_v5.py', [])
+        self._launch_viewer_tool(self.stat_maker_btn, 'stat_maker_gui_v6.py', [])
 
 form = DEEPN_Launcher()
 form.show()
