@@ -49,13 +49,26 @@ then combines the results into one table, one row per gene:
   2. JUNCTION COLLATION (from BLAST results, .bqp files)
      For each gene, in each input dataset, the percentage of junctions
      that are:
-       inframe_inorf - in-frame AND within the annotated ORF
-       upstream      - start upstream of the ORF
-       in_orf        - within the ORF (regardless of frame)
-       downstream    - start downstream of the ORF
-       in_frame      - in-frame (regardless of ORF position)
-       backwards     - mapped in the reverse orientation
-       intron        - ORF contains an intron (yeast genes only; rare)
+       inframe_inorf          - in-frame AND within the annotated ORF
+       upstream               - start upstream of the ORF
+       in_orf                 - within the ORF (regardless of frame)
+       downstream             - start downstream of the ORF
+       in-frame:forward       - in-frame, forward orientation (regardless of ORF position)
+       out-of-frame:forward   - out-of-frame, forward orientation (regardless of ORF position)
+       backwards              - mapped in the reverse orientation
+       intron                 - ORF contains an intron (yeast genes only; rare)
+
+     Frame and orientation are not independently tracked: the underlying
+     classification (functions/junctionf_gui.py) computes in-frame/
+     out-of-frame first, then overwrites that with "backwards" if the
+     junction is reverse-oriented, or "intron" if the gene contains one -
+     so "backwards" and "intron" junctions carry no frame information (a
+     backwards junction could have been in-frame or not; that's discarded).
+     "in-frame:forward"/"out-of-frame:forward" are named accordingly rather
+     than "in_frame"/"not_in_frame", since forward orientation is implied,
+     not just frame status - a junction can be positionally in-frame and
+     backwards at the same time, and that case is reported as "backwards"
+     only, not as "in-frame:forward".
 
 INPUT
 
@@ -143,9 +156,6 @@ STATISTICS METHOD (Bayesian/MCMC, via JAGS)
 R SCRIPT (run_Y2H_enrichement_stats_v5.R)
 ----------------------------------------------------------------------
 """
-
-JUNCTION_COLUMNS = ['inframe_inorf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron']
-JUNCTION_COLUMN_KEYS = {'inframe_inorf': 'frame_orf'}
 
 
 class MyListWidgetItem(QtWidgets.QListWidgetItem):
@@ -645,8 +655,6 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                        % (k, basename, basename))
                 bqp_data[k] = {}
 
-        dataset_order = ['Bait1N', 'Bait1S'] + (['Bait2N', 'Bait2S'] if has_bait2 else []) + \
-                        ['Vector1N', 'Vector2N', 'Vector1S', 'Vector2S']
         dataset_labels = {
             'Bait1N': 'Bait1_Non-Selected', 'Bait1S': 'Bait1_Selected',
             'Bait2N': 'Bait2_Non-Selected', 'Bait2S': 'Bait2_Selected',
@@ -659,7 +667,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
         out_name = 'stat_maker_%s.xlsx' % timestamp
         out_path = os.path.join(out_folder, out_name)
-        self._write_workbook(out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
+        self._write_workbook(out_path, csv_paths, dataset_labels, overdispersion,
                              bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb)
         log_cb("Wrote %s" % out_path)
 
@@ -670,7 +678,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     # row that the Excel autofilter buttons (sort/filter dropdowns, like a
     # pivot table) actually attach to.
 
-    def _write_workbook(self, out_path, csv_paths, dataset_order, dataset_labels, overdispersion,
+    def _write_workbook(self, out_path, csv_paths, dataset_labels, overdispersion,
                         bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb):
         workbook = xls.Workbook(out_path)
         ws = workbook.add_worksheet('results')
@@ -719,78 +727,122 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         # Gene column spans both header rows
         ws.merge_range(group_row, 0, field_row, 0, 'Gene', fmt_gene)
 
+        # PPM for every dataset key, loaded once (not per-gene).
+        ppm_data = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
+
+        def vector_mean_ppm(gene, cond):
+            """Mean of Vector1<cond>/Vector2<cond> PPM for one gene, cond='S' or 'N'."""
+            vals = [ppm_data[k].get(gene, 0.0) for k in ('Vector1' + cond, 'Vector2' + cond) if k in ppm_data]
+            return sum(vals) / len(vals) if vals else 0.0
+
+        # Pseudocount matches summary.data.deepn()'s Enr1 formula
+        # (log2((Bait+0.05)/(Vec+0.05))) for consistency with the MCMC-side
+        # raw ratio, even though this column is fold-change, not log2.
+        RAW_ENR_EPS = 0.05
+
         col = 1
-        deseq2_blocks = [('Bait1 Enrichment (DESeq2)', 'bait1', ['pvalue', 'log2FoldChange', 'Enrichment_score'])]
+        bait_blocks = [('Bait1', 'bait1', 'Enr1', 'AdjEnr1', 'pBait1_Vec')]
         if has_bait2:
-            deseq2_blocks.append(('Bait2 Enrichment (DESeq2)', 'bait2', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
-        deseq2_blocks.append(('Vector Enrichment (DESeq2)', 'vector', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
-        if has_bait2:
-            deseq2_blocks.append(('Bait1 vs Bait2 Specificity (DESeq2)', 'specificity', ['pvalue', 'log2FoldChange']))
+            bait_blocks.append(('Bait2', 'bait2', 'Enr2', 'AdjEnr2', 'pBait2_Vec'))
 
-        stat_field_cols = []  # (stats_dict_key, worksheet_col)
-        for label, suffix, fields in deseq2_blocks:
+        # kind: 'ppm_non' / 'ppm_sel' / 'raw_enr' / 'bayesian' / 'deseq2' / 'junction'
+        # extra: bayesian dict key / stats dict key / (bqp_key, junction_stat_key)
+        bait_field_cols = []  # (bait_label, kind, extra, worksheet_col)
+        for bait_label, suffix, enr_key, adjenr_key, pvec_key in bait_blocks:
             start_col = col
-            for fld in fields:
-                stats_key = '%s_%s' % (fld, suffix)
-                ws.write(field_row, col, fld, fmt_field)
-                stat_field_cols.append((stats_key, col))
+            fields = [
+                ('ppm non', 'ppm_non', None),
+                ('ppm select', 'ppm_sel', None),
+                ('raw enrichment (ppm select/ppm non), fold change', 'raw_enr', None),
+                ('MCMC %s' % enr_key, 'bayesian', enr_key),
+                (adjenr_key, 'bayesian', adjenr_key),
+                ('DESeq2 log2fold (%s vs Vector)' % bait_label, 'deseq2', 'log2FoldChange_%s_vs_vector' % suffix),
+                ('%s (P - probability)' % pvec_key, 'bayesian', pvec_key),
+                ('DESeq2 p-value (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector' % suffix),
+                ('% in-frame:Forward (Select)', 'junction', ('%sS' % bait_label, 'in_frame')),
+                ('% in-frame:Forward (Non-Select)', 'junction', ('%sN' % bait_label, 'in_frame')),
+            ]
+            for label, kind, extra in fields:
+                ws.write(field_row, col, label, fmt_field)
+                bait_field_cols.append((bait_label, kind, extra, col))
                 col += 1
-            if col - 1 > start_col:
-                ws.merge_range(group_row, start_col, group_row, col - 1, label, fmt_group_deseq2)
-            else:
-                ws.write(group_row, start_col, label, fmt_group_deseq2)
+            ws.merge_range(group_row, start_col, group_row, col - 1, '%s stats' % bait_label, fmt_group_deseq2)
 
-        # Bayesian/MCMC block (analyzeDeepn via JAGS). Column set mirrors
-        # summary-psm.R's two branches: the 2-bait model reports AdjEnr1/
-        # AdjEnr2 (posterior effect size per bait) plus four pairwise
-        # probabilities and the two specificity-adjusted pBait1/pBait2; the
-        # 1-bait model (no Bait2 supplied) reports just AdjEnr/p.
-        if has_bait2:
-            bayesian_fields = ['AdjEnr1', 'AdjEnr2', 'pBait1_Vec', 'pBait2_Vec',
-                               'pBait1_Bait2', 'pBait2_Bait1', 'pBait1', 'pBait2']
-        else:
-            bayesian_fields = ['AdjEnr', 'p']
-        bayesian_field_cols = []  # (bayesian_dict_key, worksheet_col)
+        # Vector stats block. ppm/junction values are averaged across
+        # Vector1/Vector2 (2 real replicates) - see vector_mean_ppm() above;
+        # junction stats are averaged the same way below. The two Non-Select-
+        # only lines (out-of-frame, backwards) are Vector-only by design: they
+        # characterize the starting prey pool's own junction quality, which
+        # should be shared across Bait1/Bait2's non-selected pools too (same
+        # library, no selection pressure applied yet), so one reference
+        # column is enough rather than repeating it per bait.
+        vector_field_cols = []  # (kind, extra, worksheet_col)
         start_col = col
-        for fld in bayesian_fields:
-            ws.write(field_row, col, fld, fmt_field)
-            bayesian_field_cols.append((fld, col))
+        vector_fields = [
+            ('ppm non', 'ppm_non', None),
+            ('ppm select', 'ppm_sel', None),
+            ('raw enrichment (ppm select/ppm non), fold change', 'raw_enr', None),
+            ('Vector Enrichment (DESeq2) log2fold change', 'deseq2', 'log2FoldChange_vector'),
+            ('Vector Enrichment (DESeq2) p-value', 'deseq2', 'pvalue_vector'),
+            ('% in-frame:Forward (Select)', 'junction', ('S', 'in_frame')),
+            ('% in-frame:Forward (Non-Select)', 'junction', ('N', 'in_frame')),
+            ('% out-frame:Forward (Non-Select)', 'junction', ('N', 'not_in_frame')),
+            ('backward (Non-Select)', 'junction', ('N', 'backwards')),
+        ]
+        for label, kind, extra in vector_fields:
+            ws.write(field_row, col, label, fmt_field)
+            vector_field_cols.append((kind, extra, col))
             col += 1
-        ws.merge_range(group_row, start_col, group_row, col - 1, 'Bayesian Enrichment (MCMC/JAGS)', fmt_group_bayesian)
-
-        junction_field_cols = []  # (dataset_key, junction_col, worksheet_col)
-        for k in dataset_order:
-            start_col = col
-            for jc in JUNCTION_COLUMNS:
-                ws.write(field_row, col, jc, fmt_field)
-                junction_field_cols.append((k, jc, col))
-                col += 1
-            ws.merge_range(group_row, start_col, group_row, col - 1, dataset_labels[k], fmt_group_junction)
+        ws.merge_range(group_row, start_col, group_row, col - 1, 'Vector stats', fmt_group_deseq2)
 
         last_col = col - 1
         data_row = field_row + 1
         for gene in genes:
             ws.write(data_row, 0, gene)
             srow = stats.get(gene, {})
-            for stats_key, wcol in stat_field_cols:
-                # Leave the cell genuinely blank (not '') when a gene has no
-                # value - Excel sorts numbers vs. text in reversed relative
-                # order between ascending/descending, so a text '' placeholder
-                # jumps to the top on a descending sort; a true blank cell
-                # sorts to the end regardless of direction. Values also come
-                # from csv.DictReader as strings - write as float so Excel
-                # sorts/filters them numerically instead of lexicographically.
-                # DESeq2 legitimately reports 'NA' for some genes (outlier/
-                # independent filtering) - treat that the same as missing.
-                if stats_key in srow and srow[stats_key] != 'NA':
-                    ws.write_number(data_row, wcol, float(srow[stats_key]))
             brow = bayesian_stats.get(gene, {})
-            for fld, wcol in bayesian_field_cols:
-                if fld in brow and brow[fld] != 'NA':
-                    ws.write_number(data_row, wcol, float(brow[fld]))
-            for k, jc, wcol in junction_field_cols:
-                gstat = sc.get_junction_stats(bqp_data[k], gene)
-                ws.write(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)])
+
+            for bait_label, kind, extra, wcol in bait_field_cols:
+                sel_key, non_key = '%sS' % bait_label, '%sN' % bait_label
+                if kind == 'ppm_non':
+                    ws.write_number(data_row, wcol, ppm_data.get(non_key, {}).get(gene, 0.0))
+                elif kind == 'ppm_sel':
+                    ws.write_number(data_row, wcol, ppm_data.get(sel_key, {}).get(gene, 0.0))
+                elif kind == 'raw_enr':
+                    p_sel = ppm_data.get(sel_key, {}).get(gene, 0.0)
+                    p_non = ppm_data.get(non_key, {}).get(gene, 0.0)
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS))
+                elif kind == 'bayesian':
+                    # Leave genuinely blank (not '') when missing - see the
+                    # sorting-order note further down for why this matters.
+                    if extra in brow and brow[extra] != 'NA':
+                        ws.write_number(data_row, wcol, float(brow[extra]))
+                elif kind == 'deseq2':
+                    if extra in srow and srow[extra] != 'NA':
+                        ws.write_number(data_row, wcol, float(srow[extra]))
+                elif kind == 'junction':
+                    dkey, jkey = extra
+                    gstat = sc.get_junction_stats(bqp_data[dkey], gene)
+                    ws.write_number(data_row, wcol, gstat[jkey])
+
+            for kind, extra, wcol in vector_field_cols:
+                if kind == 'ppm_non':
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'N'))
+                elif kind == 'ppm_sel':
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'S'))
+                elif kind == 'raw_enr':
+                    p_sel = vector_mean_ppm(gene, 'S')
+                    p_non = vector_mean_ppm(gene, 'N')
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS))
+                elif kind == 'deseq2':
+                    if extra in srow and srow[extra] != 'NA':
+                        ws.write_number(data_row, wcol, float(srow[extra]))
+                elif kind == 'junction':
+                    cond, jkey = extra
+                    d1 = sc.get_junction_stats(bqp_data['Vector1' + cond], gene)
+                    d2 = sc.get_junction_stats(bqp_data['Vector2' + cond], gene)
+                    ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2)
+
             data_row += 1
 
         # Sort/filter dropdowns on the field-name row, pivot-table style.

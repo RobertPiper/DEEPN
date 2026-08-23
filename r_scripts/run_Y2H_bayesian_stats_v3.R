@@ -49,6 +49,12 @@ if (has_bait2) {
 writeLines(lines, params_file)
 
 cat("Running Bayesian/MCMC analysis (analyzeDeepn, JAGS", if (has_bait2) "2-bait model" else "1-bait model", ") ...\n")
+# analyzeDeepn()'s own summary.psm.deepn() (see summary-psm.R) already calls
+# summary(object$Data) internally, which dispatches to summary.data.deepn()
+# correctly (dispatch from inside the package finds it even though it's not
+# registered in NAMESPACE - that gap only blocks dispatch from outside the
+# package). So opt$outfile already comes out with raw Enr1/Enr2 (or Enr for
+# single-bait) alongside AdjEnr1/AdjEnr2/pBaitN_Vec - no extra step needed.
 analyzeDeepn(infile=params_file, outfile=opt$outfile, msgfile=opt$msgfile, sort=0)
 cat("Bayesian analysis complete. Wrote:", opt$outfile, "\n")
 

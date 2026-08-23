@@ -512,7 +512,7 @@ def get_junction_stats(bqp_data, gene_name):
     """Ported from stat_maker_gui.py's Stat_Maker_Gui.get_junction_stats - computes
     junction-frame/ORF percentages for one gene from a loaded .bqp dict."""
     gene_stat = {'frame_orf': 0, 'upstream': 0, 'in_orf': 0, 'downstream': 0,
-                 'in_frame': 0, 'backwards': 0, 'intron': 0, 'total': 0}
+                 'in_frame': 0, 'not_in_frame': 0, 'backwards': 0, 'intron': 0, 'total': 0}
     try:
         gene = bqp_data[gene_name]
         for nm in gene.keys():
@@ -527,8 +527,15 @@ def get_junction_stats(bqp_data, gene_name):
                     gene_stat['upstream'] += j.ppm
                 elif j.orf == 'downstream':
                     gene_stat['downstream'] += j.ppm
+                # j.frame is a single overwrite chain (in_frame/not_in_frame
+                # computed first, then overwritten by 'intron' or 'backwards'
+                # - see functions/junctionf_gui.py), so these 4 branches are
+                # exhaustive and mutually exclusive: every junction lands in
+                # exactly one, and they sum to gene_stat['total'].
                 if j.frame == 'in_frame':
                     gene_stat['in_frame'] += j.ppm
+                elif j.frame == 'not_in_frame':
+                    gene_stat['not_in_frame'] += j.ppm
                 elif j.frame == 'backwards':
                     gene_stat['backwards'] += j.ppm
                 elif j.frame == 'intron':
@@ -537,11 +544,11 @@ def get_junction_stats(bqp_data, gene_name):
     except KeyError:
         pass
     try:
-        for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron'):
+        for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'not_in_frame', 'backwards', 'intron'):
             # round(), not format(...,'.1f') - format() returns a string,
             # which Excel then treats as text rather than a sortable number.
             gene_stat[key] = round(gene_stat[key] * 100.0 / gene_stat['total'], 1)
     except ZeroDivisionError:
-        for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron'):
+        for key in ('frame_orf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'not_in_frame', 'backwards', 'intron'):
             gene_stat[key] = 0
     return gene_stat
