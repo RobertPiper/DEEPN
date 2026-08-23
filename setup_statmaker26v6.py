@@ -1,18 +1,19 @@
 """
-py2app setup script for StatMaker_26v3 (Python 3 / PyQt5 / native Apple Silicon,
-DESeq2-based statistics with an optional 2nd bait for a specificity contrast).
+py2app setup script for StatMaker_26v6 (Python 3 / PyQt5 / native Apple Silicon,
+DESeq2 poscounts normalization + Bayesian/MCMC + hit-criteria panel with a
+reloadable general .csv).
 
 Standalone app - matches the original architecture where Stat Maker was always
 its own separate .app, never bundled inside DEEPN.app.
 
 Usage:
-    python3 setup_statmaker26v3.py py2app
+    python3 setup_statmaker26v6.py py2app
 """
 import os
 import glob
 from setuptools import setup
 
-APP_NAME = 'StatMaker_26v3'
+APP_NAME = 'StatMaker_26v6'
 
 APP = [{
     'script': 'stat_maker_gui_v6.py',
@@ -20,9 +21,9 @@ APP = [{
         'CFBundleName': APP_NAME,
         'CFBundleDisplayName': 'Stat Maker',
         'CFBundleGetInfoString': 'DEEPN Stat Maker',
-        'CFBundleIdentifier': 'edu.uiowa.robertpiper.statmaker26v3',
-        'CFBundleShortVersionString': '26.3',
-        'CFBundleVersion': '2603',
+        'CFBundleIdentifier': 'edu.uiowa.robertpiper.statmaker26v6',
+        'CFBundleShortVersionString': '26.6',
+        'CFBundleVersion': '2606',
         'NSHumanReadableCopyright': '(c) 2016-2026 Venkatramanan Krishnamani, Robert C. Piper, Mark Stammnes',
         'NSHighResolutionCapable': True,
     },
