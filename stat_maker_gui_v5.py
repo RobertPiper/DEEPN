@@ -77,6 +77,79 @@ INPUT
   annotated on multiple scaffolds/alt-contigs are summed to one PPM total
   per gene before anything else happens.
 
+OUTPUT TABLE LAYOUT
+
+  Above the Gene table: each input dataset's path, then OVERDISPERSION
+  (both methods' estimates, see below), then CRUSH (see next section).
+
+  The Gene table itself has three header rows - a block-title row, a
+  per-column scale/unit row (Linear FC / log2 / P / p-value / Percent),
+  and the field-name row the sort/filter dropdowns attach to - followed by
+  three blocks of per-gene columns, each block color-coded by which method
+  a column comes from (blue = DESeq2, purple = Bayesian/MCMC, pink = the
+  Select junction-% column):
+
+    Bait1 stats / Bait2 stats (Bait2 only if a second bait was supplied):
+      ppm non, ppm select                    - that bait's own PPM
+      raw enrichment (ppm select/non)         - linear fold change, no model
+      Enr1/Enr2                               - raw log2 fold change (model-free,
+                                                 from summary.data.deepn())
+      AdjEnr1/AdjEnr2                         - Bayesian/MCMC posterior median
+                                                 log2 effect size (Bait vs Vector)
+      DESeq2 (BaitN vs Vector) [log2 FC row]  - DESeq2's log2FoldChange for the
+                                                 same Bait-vs-Vector contrast
+      pBaitN_Vec                              - Bayesian posterior probability
+      DESeq2 (BaitN vs Vector) [p-value row]  - DESeq2's p-value for that contrast
+      in-frame:Forward (Select/Non)           - % of that dataset's junctions
+                                                 in-frame, forward orientation
+
+    Vector stats:
+      Same ppm non/select/raw-enrichment/DESeq2/junction columns as above,
+      but every value is the mean of Vector1 and Vector2 (the two vector
+      replicates) - ppm non/ppm select are each replicate's PPM averaged
+      per gene first, then the fold change is computed from those two
+      averaged PPMs (not averaged as two separate fold-change ratios).
+      Two extra Non-Select-only columns (out-frame:Forward, backward)
+      characterize the starting prey pool's own junction quality, shared
+      across Bait1/Bait2's non-selected pools too since it's the same
+      library before any selection pressure is applied.
+
+  To the right of that: the original, more granular report this table
+  used to be entirely - DESeq2 blocks in blue (Enrichment per bait/vector,
+  Specificity, and compact Bait-vs-Vector, each pvalue+log2FoldChange),
+  the Bayesian/MCMC block in purple (AdjEnr1/AdjEnr2 plus the four
+  pairwise/specificity-adjusted probabilities), then a full per-dataset
+  junction breakdown in gray (inframe_inorf/upstream/in_orf/downstream/
+  in_frame/backwards/intron - the original 7 categories, not renamed here
+  even though the Bait/Vector-stats blocks above use the newer
+  "in-frame:Forward"/"out-of-frame:Forward" labels).
+
+CRUSH
+
+  A "crushed" prey pool is one where selection has driven most
+  originally-present genes down to background/undetectable levels - the
+  bait (or vector) successfully out-competed non-specific prey. The CRUSH
+  table (above the Gene table) reports, separately for Vector1, Vector2,
+  Bait1, and Bait2, what happened to each gene that started at >=3ppm in
+  that dataset's own Non-Select sample (3ppm is the same detection floor
+  used as the Bayesian model's threshold):
+
+    High/Med/Low  - de-enriched by >=10x / 2.5x-10x / 1x-2.5x respectively
+                    (High also includes anything that dropped below 3ppm
+                    in Select, even if the fold-change itself is <10x)
+    low/High Enrich - enriched by <2x / >=2x
+    (these five are mutually exclusive and sum to 100% of that dataset's
+    >=3ppm-in-Non-Select genes)
+
+    Extinguished  - the old "casualty rate": % of those same genes that
+                    fell below 3ppm in Select. This is a breakout of part
+                    of "High", not a sixth exclusive bin, so it is not
+                    part of the 100% sum above (shown grayed out).
+
+  Good crush looks like Extinguished > ~80% - the large majority of genes
+  that started present are gone by the end of selection. A weakly-crushed
+  ("low-crush") dataset sits well below that.
+
 STATISTICS METHOD (DESeq2)
 
   Adapted from the method described in:
@@ -123,6 +196,21 @@ STATISTICS METHOD (DESeq2)
   enrichment (Selected > Non-Selected), which independently catches the
   "less de-enriched than vector, but not really enriched" pattern that
   drove most low-crush false calls in the first place.
+
+  In practical terms: a low-crush bait (Extinguished well under ~80%, see
+  CRUSH above) lets many non-specific prey survive selection just because
+  the bait didn't out-compete them as hard as a well-crushed vector
+  control would have - not because those prey are real interactors. Under
+  the Bayesian/MCMC method this shows up directly as an inflated hit
+  count, since AdjEnr/pBaitN_Vec compare Bait-Selected to Vector-Selected:
+  those survivors look enriched relative to vector even though most of
+  them are still de-enriched relative to their own gene's Non-Select PPM
+  (just less de-enriched than in a strongly-crushed vector). DESeq2's
+  poscounts normalization is what accounts for this when it computes a
+  p-value - by estimating each gene's own size factor from its nonzero
+  values instead of assuming uniform depletion, it stops rewarding a bait
+  purely for having crushed less thoroughly than the vector it's compared
+  against.
 
   Reported overdispersion is the mean overdispersion across the
   NON-SELECTED replicates only (a simple (Var-Mean)/Mean^2 estimate,
@@ -683,15 +771,49 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         workbook = xls.Workbook(out_path)
         ws = workbook.add_worksheet('results')
 
+        # Old-report block colors (DESeq2 blue / Bayesian purple / junction
+        # gray) - unchanged from before.
         fmt_group_deseq2 = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
                                                 'bg_color': '#D9E8FB', 'border': 1})
         fmt_group_bayesian = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
                                                    'bg_color': '#E6D9F7', 'border': 1})
         fmt_group_junction = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
                                                    'bg_color': '#E9E9E9', 'border': 1})
+        # Bait1/Bait2/Vector-stats block colors, matched to Example_For
+        # statmaker.xlsx's own theme-color header fills (extracted from
+        # that file's xl/theme/theme1.xml: theme4/accent4 "Gold, Accent 4,
+        # Lighter 60%", theme2/accent2 "Orange, Accent 2, Lighter 60%",
+        # theme0/lt1 "White, Background 1, Darker 15%").
+        fmt_group_bait1 = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
+                                               'bg_color': '#FFE699', 'border': 1})
+        fmt_group_bait2 = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
+                                               'bg_color': '#F8CBAD', 'border': 1})
+        fmt_group_vector = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter',
+                                                'bg_color': '#D9D9D9', 'border': 1})
         fmt_field = workbook.add_format({'bold': True, 'border': 1})
+        # Per-column source-method tint within the Bait1/Bait2/Vector-stats
+        # blocks: Bayesian-derived columns (Enr/AdjEnr/pBaitN_Vec) purple,
+        # DESeq2-derived columns (log2fold/p-value) blue - same hues as the
+        # old-report block colors, just applied per-cell instead of merged
+        # across a whole block. The Select junction-% column gets its own
+        # pink tint; the Non-Select one stays uncolored.
+        fmt_field_bayesian = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#E6D9F7'})
+        fmt_field_deseq2 = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#D9E8FB'})
+        fmt_field_select = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EEB1C2'})
+        fmt_unit = workbook.add_format({'italic': True, 'align': 'center', 'font_color': '#666666'})
         fmt_gene = workbook.add_format({'bold': True})
         fmt_section = workbook.add_format({'bold': True})
+        # Extinguished is a breakout/subset stat, not one of the 5 mutually
+        # exclusive CRUSH bins - grayed out (same gray as Vector stats) to
+        # set it apart visually.
+        fmt_gray = workbook.add_format({'bg_color': '#D9D9D9'})
+        fmt_gray_bold = workbook.add_format({'bold': True, 'bg_color': '#D9D9D9'})
+        # Display-only cap at 2 decimal places for every numeric gene-stat
+        # cell (CRUSH percentages and the whole per-gene table) - the
+        # underlying value written to the cell keeps full precision, only
+        # the displayed text is rounded.
+        fmt_num2 = workbook.add_format({'num_format': '0.00'})
+        fmt_num2_gray = workbook.add_format({'num_format': '0.00', 'bg_color': '#D9D9D9'})
 
         row = 0
         for k in csv_paths:
@@ -719,16 +841,89 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 if value is not None:
                     ws.write_number(row, 1, value)
                 row += 1
-        row += 1
-
-        group_row = row
-        field_row = row + 1
-
-        # Gene column spans both header rows
-        ws.merge_range(group_row, 0, field_row, 0, 'Gene', fmt_gene)
 
         # PPM for every dataset key, loaded once (not per-gene).
         ppm_data = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
+
+        # ---- CRUSH table: how hard each individual Sel/Non pair "crushed"
+        # its own prey pool by itself, independent of any bait-vs-vector
+        # comparison. Restricted to genes that started >=3ppm in Non-Select
+        # (the same detection floor used as the Bayesian threshold) - below
+        # that, a gene was never reliably present to begin with.
+        #   High:       ppm_select < 3 (dropped below detection) OR
+        #               select/non-select ratio <= 0.1 (>=10-fold lost)
+        #   Med:        not High, ratio in (0.1, 0.4]  (2.5x-10x lost)
+        #   Low:        not High, ratio in (0.4, 1)    (1x-2.5x lost)
+        #   low Enrich: ratio in [1, 2)
+        #   High Enrich: ratio >= 2
+        # (High/Med/Low/low-Enrich/High-Enrich are mutually exclusive and
+        # sum to 100% of the >=3ppm-in-Non-Select denominator.)
+        #   Extinguished: ppm_select < 3 alone (the old casualty rate) - a
+        # breakout of part of "High", not a 6th exclusive bin, so it does
+        # not add into that 100% sum.
+        CRUSH_THRESHOLD = 3.0
+
+        def crush_bins(sel_key, non_key):
+            ppm_sel = ppm_data.get(sel_key, {})
+            ppm_non = ppm_data.get(non_key, {})
+            present = [g for g in ppm_non if ppm_non[g] >= CRUSH_THRESHOLD]
+            if not present:
+                return None
+            counts = {'high': 0, 'med': 0, 'low_de': 0, 'low_en': 0, 'high_en': 0, 'extinguished': 0}
+            for g in present:
+                s = ppm_sel.get(g, 0.0)
+                ratio = s / ppm_non[g]
+                if s < CRUSH_THRESHOLD:
+                    counts['extinguished'] += 1
+                if s < CRUSH_THRESHOLD or ratio <= 0.1:
+                    counts['high'] += 1
+                elif ratio <= 0.4:
+                    counts['med'] += 1
+                elif ratio < 1:
+                    counts['low_de'] += 1
+                elif ratio < 2:
+                    counts['low_en'] += 1
+                else:
+                    counts['high_en'] += 1
+            n = len(present)
+            return {k: 100.0 * v / n for k, v in counts.items()}
+
+        crush_rows = [('Vector1', 'Vector1S', 'Vector1N'), ('Vector2', 'Vector2S', 'Vector2N'),
+                      ('Bait1', 'Bait1S', 'Bait1N')]
+        if has_bait2:
+            crush_rows.append(('Bait2', 'Bait2S', 'Bait2N'))
+
+        ws.write(row, 0, 'CRUSH', fmt_section)
+        ws.write(row, 1, 'De-Enrichment fold (percent)')
+        ws.write(row, 4, 'Enrichment fold (Percent)')
+        ws.write(row, 6, 'Percent', fmt_gray_bold)
+        row += 1
+        for c, label in ((1, 'High (>=10)'), (2, 'Med (2.5-10)'), (3, 'Low (1-2.5)'), (4, 'low (<2)'), (5, 'High (>=2)')):
+            ws.write(row, c, label)
+        ws.write(row, 6, 'Extinguished', fmt_gray_bold)
+        row += 1
+        for label, sel_key, non_key in crush_rows:
+            ws.write(row, 0, label)
+            bins = crush_bins(sel_key, non_key)
+            if bins is not None:
+                for c, key in ((1, 'high'), (2, 'med'), (3, 'low_de'), (4, 'low_en'), (5, 'high_en')):
+                    ws.write_number(row, c, bins[key], fmt_num2)
+                ws.write_number(row, 6, bins['extinguished'], fmt_num2_gray)
+            row += 1
+
+        # Three header rows: group_row (top) titles only the Bait1/Bait2/
+        # Vector-stats blocks; mid_row carries per-column scale/unit tags
+        # for those same blocks (Linear FC / log2 / P / p-value / Percent)
+        # and doubles as the block-title row for the appended old-report
+        # section further right (which has nothing on group_row); field_row
+        # has the actual column names for everything, and is what the
+        # autofilter (sort/filter dropdowns) attaches to.
+        group_row = row
+        mid_row = row + 1
+        field_row = row + 2
+
+        # Gene column spans all three header rows
+        ws.merge_range(group_row, 0, field_row, 0, 'Gene', fmt_gene)
 
         def vector_mean_ppm(gene, cond):
             """Mean of Vector1<cond>/Vector2<cond> PPM for one gene, cond='S' or 'N'."""
@@ -747,26 +942,31 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
         # kind: 'ppm_non' / 'ppm_sel' / 'raw_enr' / 'bayesian' / 'deseq2' / 'junction'
         # extra: bayesian dict key / stats dict key / (bqp_key, junction_stat_key)
+        # unit: scale/type tag written on mid_row (None -> left blank)
+        # fld_fmt: per-field-cell format override (None -> fmt_field)
         bait_field_cols = []  # (bait_label, kind, extra, worksheet_col)
         for bait_label, suffix, enr_key, adjenr_key, pvec_key in bait_blocks:
             start_col = col
             fields = [
-                ('ppm non', 'ppm_non', None),
-                ('ppm select', 'ppm_sel', None),
-                ('raw enrichment (ppm select/ppm non), fold change', 'raw_enr', None),
-                ('MCMC %s' % enr_key, 'bayesian', enr_key),
-                (adjenr_key, 'bayesian', adjenr_key),
-                ('DESeq2 log2fold (%s vs Vector)' % bait_label, 'deseq2', 'log2FoldChange_%s_vs_vector' % suffix),
-                ('%s (P - probability)' % pvec_key, 'bayesian', pvec_key),
-                ('DESeq2 p-value (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector' % suffix),
-                ('% in-frame:Forward (Select)', 'junction', ('%sS' % bait_label, 'in_frame')),
-                ('% in-frame:Forward (Non-Select)', 'junction', ('%sN' % bait_label, 'in_frame')),
+                ('ppm non', 'ppm_non', None, None, None),
+                ('ppm select', 'ppm_sel', None, None, None),
+                ('raw enrichment (ppm select/non)', 'raw_enr', None, 'Linear FC', None),
+                (enr_key, 'bayesian', enr_key, 'log2', fmt_field_bayesian),
+                (adjenr_key, 'bayesian', adjenr_key, 'log2', fmt_field_bayesian),
+                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'log2FoldChange_%s_vs_vector' % suffix, 'log2 FC', fmt_field_deseq2),
+                (pvec_key, 'bayesian', pvec_key, 'P', fmt_field_bayesian),
+                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector' % suffix, 'p-value', fmt_field_deseq2),
+                ('in-frame:Forward (Select)', 'junction', ('%sS' % bait_label, 'in_frame'), 'Percent', fmt_field_select),
+                ('in-frame:Forward (Non)', 'junction', ('%sN' % bait_label, 'in_frame'), 'Percent', None),
             ]
-            for label, kind, extra in fields:
-                ws.write(field_row, col, label, fmt_field)
+            for label, kind, extra, unit, fld_fmt in fields:
+                ws.write(field_row, col, label, fld_fmt or fmt_field)
+                if unit:
+                    ws.write(mid_row, col, unit, fmt_unit)
                 bait_field_cols.append((bait_label, kind, extra, col))
                 col += 1
-            ws.merge_range(group_row, start_col, group_row, col - 1, '%s stats' % bait_label, fmt_group_deseq2)
+            block_fmt = fmt_group_bait1 if bait_label == 'Bait1' else fmt_group_bait2
+            ws.merge_range(group_row, start_col, group_row, col - 1, '%s stats' % bait_label, block_fmt)
 
         # Vector stats block. ppm/junction values are averaged across
         # Vector1/Vector2 (2 real replicates) - see vector_mean_ppm() above;
@@ -779,21 +979,76 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         vector_field_cols = []  # (kind, extra, worksheet_col)
         start_col = col
         vector_fields = [
-            ('ppm non', 'ppm_non', None),
-            ('ppm select', 'ppm_sel', None),
-            ('raw enrichment (ppm select/ppm non), fold change', 'raw_enr', None),
-            ('Vector Enrichment (DESeq2) log2fold change', 'deseq2', 'log2FoldChange_vector'),
-            ('Vector Enrichment (DESeq2) p-value', 'deseq2', 'pvalue_vector'),
-            ('% in-frame:Forward (Select)', 'junction', ('S', 'in_frame')),
-            ('% in-frame:Forward (Non-Select)', 'junction', ('N', 'in_frame')),
-            ('% out-frame:Forward (Non-Select)', 'junction', ('N', 'not_in_frame')),
-            ('backward (Non-Select)', 'junction', ('N', 'backwards')),
+            ('ppm non', 'ppm_non', None, None, None),
+            ('ppm select', 'ppm_sel', None, None, None),
+            ('raw enrichment (ppm select/non)', 'raw_enr', None, 'Linear FC', None),
+            ('Vector Enrichment (DESeq2)', 'deseq2', 'log2FoldChange_vector', 'log2 FC', fmt_field_deseq2),
+            ('Vector Enrichment (DESeq2)', 'deseq2', 'pvalue_vector', 'p-value', fmt_field_deseq2),
+            ('in-frame:Forward (Select)', 'junction', ('S', 'in_frame'), 'Percent', fmt_field_select),
+            ('in-frame:Forward (Non)', 'junction', ('N', 'in_frame'), 'Percent', None),
+            ('out-frame:Forward (Non)', 'junction', ('N', 'not_in_frame'), 'Percent', None),
+            ('backward (Non)', 'junction', ('N', 'backwards'), 'Percent', None),
         ]
-        for label, kind, extra in vector_fields:
-            ws.write(field_row, col, label, fmt_field)
+        for label, kind, extra, unit, fld_fmt in vector_fields:
+            ws.write(field_row, col, label, fld_fmt or fmt_field)
+            if unit:
+                ws.write(mid_row, col, unit, fmt_unit)
             vector_field_cols.append((kind, extra, col))
             col += 1
-        ws.merge_range(group_row, start_col, group_row, col - 1, 'Vector stats', fmt_group_deseq2)
+        ws.merge_range(group_row, start_col, group_row, col - 1, 'Vector stats', fmt_group_vector)
+
+        # ---- Full per-contrast/per-dataset report, appended to the right ----
+        # This is the original report layout (DESeq2 blocks in blue, the
+        # Bayesian/MCMC block in purple, per-dataset junction breakdown in
+        # gray) that predates the Bait1/Bait2/Vector-stats blocks above -
+        # kept alongside them, not replaced, so both views are in one report.
+        # Block titles for this section sit on mid_row (group_row has no
+        # entries here), one row lower than the Bait1/Bait2/Vector titles.
+        deseq2_blocks = [('Bait1 Enrichment (DESeq2)', 'bait1', ['pvalue', 'log2FoldChange', 'Enrichment_score'])]
+        if has_bait2:
+            deseq2_blocks.append(('Bait2 Enrichment (DESeq2)', 'bait2', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
+        deseq2_blocks.append(('Vector Enrichment (DESeq2)', 'vector', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
+        if has_bait2:
+            deseq2_blocks.append(('Bait1 vs Bait2 Specificity (DESeq2)', 'specificity', ['pvalue', 'log2FoldChange']))
+        deseq2_blocks.append(('Bait1 vs Vector (DESeq2)', 'bait1_vs_vector', ['pvalue', 'log2FoldChange']))
+        if has_bait2:
+            deseq2_blocks.append(('Bait2 vs Vector (DESeq2)', 'bait2_vs_vector', ['pvalue', 'log2FoldChange']))
+
+        stat_field_cols = []  # (stats_dict_key, worksheet_col)
+        for label, suffix, fields in deseq2_blocks:
+            start_col = col
+            for fld in fields:
+                stats_key = '%s_%s' % (fld, suffix)
+                ws.write(field_row, col, fld, fmt_field)
+                stat_field_cols.append((stats_key, col))
+                col += 1
+            ws.merge_range(mid_row, start_col, mid_row, col - 1, label, fmt_group_deseq2)
+
+        if has_bait2:
+            bayesian_fields = ['AdjEnr1', 'AdjEnr2', 'pBait1_Vec', 'pBait2_Vec',
+                               'pBait1_Bait2', 'pBait2_Bait1', 'pBait1', 'pBait2']
+        else:
+            bayesian_fields = ['AdjEnr', 'p']
+        bayesian_field_cols = []  # (bayesian_dict_key, worksheet_col)
+        start_col = col
+        for fld in bayesian_fields:
+            ws.write(field_row, col, fld, fmt_field)
+            bayesian_field_cols.append((fld, col))
+            col += 1
+        ws.merge_range(mid_row, start_col, mid_row, col - 1, 'Bayesian Enrichment (MCMC/JAGS)', fmt_group_bayesian)
+
+        JUNCTION_COLUMNS = ['inframe_inorf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron']
+        JUNCTION_COLUMN_KEYS = {'inframe_inorf': 'frame_orf'}
+        dataset_order = ['Bait1N', 'Bait1S'] + (['Bait2N', 'Bait2S'] if has_bait2 else []) + \
+                        ['Vector1N', 'Vector2N', 'Vector1S', 'Vector2S']
+        junction_field_cols = []  # (dataset_key, junction_col, worksheet_col)
+        for k in dataset_order:
+            start_col = col
+            for jc in JUNCTION_COLUMNS:
+                ws.write(field_row, col, jc, fmt_field)
+                junction_field_cols.append((k, jc, col))
+                col += 1
+            ws.merge_range(mid_row, start_col, mid_row, col - 1, dataset_labels[k], fmt_group_junction)
 
         last_col = col - 1
         data_row = field_row + 1
@@ -805,43 +1060,53 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             for bait_label, kind, extra, wcol in bait_field_cols:
                 sel_key, non_key = '%sS' % bait_label, '%sN' % bait_label
                 if kind == 'ppm_non':
-                    ws.write_number(data_row, wcol, ppm_data.get(non_key, {}).get(gene, 0.0))
+                    ws.write_number(data_row, wcol, ppm_data.get(non_key, {}).get(gene, 0.0), fmt_num2)
                 elif kind == 'ppm_sel':
-                    ws.write_number(data_row, wcol, ppm_data.get(sel_key, {}).get(gene, 0.0))
+                    ws.write_number(data_row, wcol, ppm_data.get(sel_key, {}).get(gene, 0.0), fmt_num2)
                 elif kind == 'raw_enr':
                     p_sel = ppm_data.get(sel_key, {}).get(gene, 0.0)
                     p_non = ppm_data.get(non_key, {}).get(gene, 0.0)
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS))
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), fmt_num2)
                 elif kind == 'bayesian':
                     # Leave genuinely blank (not '') when missing - see the
                     # sorting-order note further down for why this matters.
                     if extra in brow and brow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(brow[extra]))
+                        ws.write_number(data_row, wcol, float(brow[extra]), fmt_num2)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(srow[extra]))
+                        ws.write_number(data_row, wcol, float(srow[extra]), fmt_num2)
                 elif kind == 'junction':
                     dkey, jkey = extra
                     gstat = sc.get_junction_stats(bqp_data[dkey], gene)
-                    ws.write_number(data_row, wcol, gstat[jkey])
+                    ws.write_number(data_row, wcol, gstat[jkey], fmt_num2)
 
             for kind, extra, wcol in vector_field_cols:
                 if kind == 'ppm_non':
-                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'N'))
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'N'), fmt_num2)
                 elif kind == 'ppm_sel':
-                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'S'))
+                    ws.write_number(data_row, wcol, vector_mean_ppm(gene, 'S'), fmt_num2)
                 elif kind == 'raw_enr':
                     p_sel = vector_mean_ppm(gene, 'S')
                     p_non = vector_mean_ppm(gene, 'N')
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS))
+                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), fmt_num2)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] != 'NA':
-                        ws.write_number(data_row, wcol, float(srow[extra]))
+                        ws.write_number(data_row, wcol, float(srow[extra]), fmt_num2)
                 elif kind == 'junction':
                     cond, jkey = extra
                     d1 = sc.get_junction_stats(bqp_data['Vector1' + cond], gene)
                     d2 = sc.get_junction_stats(bqp_data['Vector2' + cond], gene)
-                    ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2)
+                    ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2, fmt_num2)
+
+            for stats_key, wcol in stat_field_cols:
+                if stats_key in srow and srow[stats_key] != 'NA':
+                    ws.write_number(data_row, wcol, float(srow[stats_key]), fmt_num2)
+            for fld, wcol in bayesian_field_cols:
+                if fld in brow and brow[fld] != 'NA':
+                    ws.write_number(data_row, wcol, float(brow[fld]), fmt_num2)
+            for k, jc, wcol in junction_field_cols:
+                gstat = sc.get_junction_stats(bqp_data[k], gene)
+                ws.write_number(data_row, wcol, gstat[JUNCTION_COLUMN_KEYS.get(jc, jc)], fmt_num2)
 
             data_row += 1
 

@@ -10,7 +10,7 @@ Builds one app bundle containing:
   - query_blast_gui.py        \  Contents/MacOS/, sharing the same embedded
   - read_depth_gui_v2.py       /  Python runtime as the main app.
   - fragfinder_gui.py         /
-  - stat_maker_gui_v3.py     /
+  - stat_maker_gui_v5.py     /
 
 Stat Maker needs no state from DEEPN's own database (it does its own
 folder/dataset selection internally), so it's bundled here as a launcher
@@ -49,7 +49,7 @@ EXTRA_SCRIPTS = [
     'query_blast_gui.py',
     'read_depth_gui_v2.py',
     'fragfinder_gui.py',
-    'stat_maker_gui_v3.py',
+    'stat_maker_gui_v5.py',
 ]
 
 APP = [{
