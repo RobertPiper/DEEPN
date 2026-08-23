@@ -958,7 +958,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             junction_fn = _default_junction_fn(run['bqp_data'])
             self._active_source = {
                 'kind': 'run', 'genes': run['genes'], 'has_bait2': run['has_bait2'],
-                'out_folder': run['out_folder'],
+                'out_folder': run['out_folder'], 'ppm_data': run['ppm_data'],
                 'maps1': _build_bait_value_maps(1, run['genes'], run['ppm_data'], run['stats'],
                                                 run['bayesian_stats'], junction_fn),
                 'maps2': (_build_bait_value_maps(2, run['genes'], run['ppm_data'], run['stats'],
@@ -1494,7 +1494,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.export_default_btn.clicked.connect(self.export_default_clicked)
         layout.addWidget(self.export_default_btn)
 
-        layout.addWidget(QtWidgets.QLabel('Export name:'))
+        layout.addWidget(QtWidgets.QLabel('Statmaker file name (.csv):'))
         self.export_name_edit = QtWidgets.QLineEdit()
         layout.addWidget(self.export_name_edit)
         self.export_data_btn = QtWidgets.QPushButton('Export Data (.csv)')
@@ -1541,6 +1541,16 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         fold_sel = ClickThroughSelector(
             [None, -2, 0, 2, 5, 10],
             lambda v: 'none' if v is None else '> %+gfold' % v)
+        # Defaults: P>0.5, p<=0.1, >=80% in-frame:Forward, >+0fold (any
+        # real enrichment) - a reasonable starting cut, not "none"/off.
+        p_sel.index = 5
+        p_sel._refresh()
+        pval_sel.index = 1
+        pval_sel._refresh()
+        infr_sel.index = 80
+        infr_sel._refresh()
+        fold_sel.index = 2
+        fold_sel._refresh()
         sort_combo = QtWidgets.QComboBox()
         sort_combo.addItems(['DESeq2 (%s vs Vector)' % bait_label, 'Enr%d' % bait_num, 'AdjEnr%d' % bait_num])
 
@@ -1596,13 +1606,26 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         criteria = self._criteria_dict(widgets)
         return [g for g in source['genes'] if _gene_passes_criteria(g, criteria, maps)]
 
+    @staticmethod
+    def _n_above_3ppm_selected(source, bait_num):
+        """Denominator for the Find count: how many genes are even still
+        above 3ppm (the same detection floor used elsewhere) in that
+        bait's own Selected sample - i.e. how many candidates survived
+        selection at all, before any hit criteria are applied."""
+        sel = source['ppm_data'].get('Bait%dS' % bait_num, {})
+        return sum(1 for g in source['genes'] if sel.get(g, 0.0) >= 3.0)
+
     @QtCore.pyqtSlot()
     def find_b1_clicked(self):
-        self.b1_count_label.setText(str(len(self._matching_genes(1, self.b1_criteria))))
+        n = len(self._matching_genes(1, self.b1_criteria))
+        d = self._n_above_3ppm_selected(self._active_source, 1)
+        self.b1_count_label.setText("%d / %d" % (n, d))
 
     @QtCore.pyqtSlot()
     def find_b2_clicked(self):
-        self.b2_count_label.setText(str(len(self._matching_genes(2, self.b2_criteria))))
+        n = len(self._matching_genes(2, self.b2_criteria))
+        d = self._n_above_3ppm_selected(self._active_source, 2)
+        self.b2_count_label.setText("%d / %d" % (n, d))
 
     def _source_write_args(self, source):
         """Common args _write_workbook needs, regardless of whether
@@ -1703,6 +1726,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.b1_count_label.setText('')
         self.b2_count_label.setText('')
         self.source_label.setText("Active source: %s" % parsed['name'])
+        self.export_name_edit.setText(parsed['name'])
         self.log("Loaded %s (%d genes%s)"
                  % (path, len(parsed['genes']), ", Bait2 present" if parsed['has_bait2'] else ""))
 
