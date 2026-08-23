@@ -284,6 +284,37 @@ Compared to the original 2018 build (Python 2 / PyQt4, Intel-only):
     Bayesian results now appear as separate, adjacent column blocks in
     the same output table rather than one replacing the other.
 
+  - Stat Maker rebuilt again (v5/v6): DESeq2's own size-factor
+    normalization now runs for real. Earlier versions handed DESeq2
+    already-normalized PPM values with every sample's size factor forced
+    to 1, which bypassed its normalization entirely. v5 instead
+    reconstructs raw integer counts and lets DESeq2 estimate its own
+    size factors via "poscounts" - a population-level correction that
+    removes most of the correlation between a bait's own crush strength
+    (see below) and its hit count (see Stat Maker's own Method Info for
+    the full validation and citation).
+
+    Stat Maker also gained a hit-criteria panel: set per-bait thresholds
+    (posterior probability, DESeq2 p-value, % in-frame junctions,
+    positive enrichment fold) and export a version of the report with
+    passing genes sorted to the top and highlighted. The full computed
+    result set can now be saved as a self-contained general .csv and
+    reloaded later to re-filter, re-sort, and re-export Excel files
+    without re-running DESeq2/MCMC.
+
+    Crush strength - how thoroughly a bait's selected culture depletes
+    non-specific background prey - is now reported directly (the CRUSH
+    table above Stat Maker's Gene table). A low-crush bait will show
+    many genes that look elevated; that is not noise, it is exactly the
+    failure mode the diagnostic exists to catch, since those genes
+    mostly aren't truly enriched - they're just less de-enriched than a
+    well-crushed Vector control's own background happens to be. DESeq2's
+    own significance test already makes hits more stringent than a
+    simple ratio comparison would; requiring a real positive fold-change
+    on top of that tightens things again in a complementary way, because
+    even in a low-crush sample most genes are still net de-enriched -
+    just less severely than in a well-crushed one.
+
   - Recovered reference data. The gene list files (lists/*.prn)
     needed by Blast Query, Read Depth, and Junction Make were missing
     from the source repository and have been restored from the
