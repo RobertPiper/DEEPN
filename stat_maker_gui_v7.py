@@ -7,6 +7,7 @@ if '.app/Contents/MacOS' in sys.executable:
 
 import re
 import csv
+import math
 import time
 import glob
 import tempfile
@@ -348,18 +349,6 @@ def _raw_enrichment_ratio(p_sel, p_non):
     return p_sel / max(p_non, RAW_ENR_EPS)
 
 
-def _signed_fold(ratio):
-    """Linear ratio -> intuitive signed fold change: 2.0 -> +2 ("2x
-    enriched"), 0.5 -> -2 ("2x de-enriched"). Matches how a bench biologist
-    would describe fold change, unlike a plain ratio which reports both
-    directions as awkward decimals. ratio<=0 (a gene absent in Select, see
-    _raw_enrichment_ratio) maps to -inf - maximally de-enriched, so it
-    fails every positive fold threshold rather than raising ZeroDivisionError."""
-    if ratio <= 0:
-        return float('-inf')
-    return ratio if ratio >= 1 else -1.0 / ratio
-
-
 # _gene_passes_criteria/_sort_key_value operate on a `maps` dict - {'p':
 # {gene: val}, 'pval': {...}, 'infr': {...}, 'ratio': {...}, 'deseq2': {...},
 # 'enr': {...}, 'adjenr': {...}} - one bait's worth of per-gene values,
@@ -371,10 +360,26 @@ def _signed_fold(ratio):
 # no raw source data needed).
 
 def _gene_passes_criteria(gene, criteria, maps):
-    """criteria: dict with keys 'p', 'pval_raw', 'pval_norm', 'infr', 'fold'
-    - each None (or 0 for 'infr') means that threshold isn't set and never
-    blocks a gene. Once a threshold IS set, a gene missing the underlying
-    value fails it (can't confirm it clears a bar that isn't there)."""
+    """criteria: dict with keys 'p', 'pval_raw', 'pval_norm', 'infr',
+    'adjenr_fold', 'deseq2_fold' - each None (or 0 for 'infr') means that
+    threshold isn't set and never blocks a gene. Once a threshold IS set,
+    a gene missing the underlying value fails it (can't confirm it clears
+    a bar that isn't there).
+
+    adjenr_fold/deseq2_fold are a dual enrichment-agreement check - AdjEnr
+    (Bayesian/MCMC posterior median log2FC, Bait vs Vector) and DESeq2's
+    own log2FC (Bait vs Vector) each independently need to clear their own
+    threshold, rather than filtering on the plain within-bait select/non
+    ratio. That raw ratio structurally misses "low-crush" hits (de-
+    enriched within the bait's own culture, but still more enriched than
+    Vector) - determined empirically by sweeping thresholds against the
+    prior manually-curated Rab GTPase hit list (see rab_hit_recapitulation
+    analysis, 2026-08-24): AdjEnr>0 alone recaptured 96.3% of that list at
+    infr>=80% with far less noise than the raw ratio (76.2%) or DESeq2
+    alone ever achieved in the same fold range; requiring DESeq2's log2FC
+    to also clear >3x on top of AdjEnr>0 cut the noise further at
+    negligible capture cost. Both are already log2-scale, so the
+    threshold is compared directly, not converted from a linear ratio."""
     p = criteria.get('p')
     if p is not None:
         val = maps['p'].get(gene)
@@ -399,10 +404,16 @@ def _gene_passes_criteria(gene, criteria, maps):
         if not (val >= infr):
             return False
 
-    fold = criteria.get('fold')
-    if fold is not None:
-        ratio = maps['ratio'].get(gene)
-        if ratio is None or not (_signed_fold(ratio) > fold):
+    adjenr_fold = criteria.get('adjenr_fold')
+    if adjenr_fold is not None:
+        val = maps['adjenr'].get(gene)
+        if val is None or not (val > adjenr_fold):
+            return False
+
+    deseq2_fold = criteria.get('deseq2_fold')
+    if deseq2_fold is not None:
+        val = maps['deseq2'].get(gene)
+        if val is None or not (val > deseq2_fold):
             return False
 
     return True
@@ -775,7 +786,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
         self._build_export_panel()
         self._build_results_panel()
-        self.resize(self.width() + 480, self.height())
+        self.resize(self.width() + 560, int(self.height() * 1.20))
 
         self.log("Stat Maker v7 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
         self.log("Found Rscript: %s" % self.rscript_exe if self.rscript_exe else
@@ -1694,30 +1705,58 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         infr_sel = ClickThroughSelector(
             list(range(0, 101)),
             lambda v: 'none' if v == 0 else '≥ %d%%' % v)
-        fold_sel = ClickThroughSelector(
-            [None, -2, 0, 2, 5, 10],
-            lambda v: 'none' if v is None else '> %+gfold' % v)
-        # Defaults: P>0.5, p<=0.1, >=80% in-frame:Forward, >+0fold (any
-        # real enrichment) - a reasonable starting cut, not "none"/off.
-        p_sel.index = 5
+        # Dual enrichment-agreement gate (AdjEnr and DESeq2's own log2FC,
+        # both Bait vs Vector, each independently thresholded) replaced the
+        # old single raw select/non ratio fold check - see
+        # _gene_passes_criteria's docstring for why. Both already log2, so
+        # the fold-multiple shown is 2**v, not a linear-ratio conversion.
+        fold_values = [None, 0.0, math.log2(1.5), math.log2(2), math.log2(3), math.log2(5)]
+        fold_display = lambda v: 'none' if v is None else '> %gx' % round(2 ** v, 4)
+        adjenr_fold_sel = ClickThroughSelector(fold_values, fold_display)
+        deseq2_fold_sel = ClickThroughSelector(fold_values, fold_display)
+        # Defaults, locked in from the rab_hit_recapitulation sweep
+        # (2026-08-24) against the prior manually-curated Rab GTPase hit
+        # list: infr>=80%, AdjEnr>0, DESeq2>3x, p-value_raw<=0.01 recaptured
+        # 95.5% of that list with the least noise of any combination
+        # tested. P>0.5 added no further benefit on top of AdjEnr (same
+        # posterior, fully redundant there) but P>0.8 does cut further
+        # noise, at a real capture cost (95.6%->92.9% in that same sweep) -
+        # accepted deliberately. p-value_norm is unreliable per-dataset
+        # (see its own label below), so it defaults to off.
+        p_sel.index = 8
         p_sel._refresh()
-        pval_raw_sel.index = 1
+        pval_raw_sel.index = 2
         pval_raw_sel._refresh()
-        pval_norm_sel.index = 1
+        pval_norm_sel.index = 0
         pval_norm_sel._refresh()
         infr_sel.index = 80
         infr_sel._refresh()
-        fold_sel.index = 2
-        fold_sel._refresh()
+        adjenr_fold_sel.index = 1
+        adjenr_fold_sel._refresh()
+        deseq2_fold_sel.index = 4
+        deseq2_fold_sel._refresh()
         sort_combo = QtWidgets.QComboBox()
         sort_combo.addItems(['DESeq2 (%s vs Vector)' % bait_label, 'Enr%d' % bait_num,
                               'AdjEnr%d' % bait_num, 'ppm/ppm'])
 
         row('P (probability, MCMC):', p_sel)
         row('p-value_raw (DESeq2):', pval_raw_sel)
-        row('p-value_norm (DESeq2):', pval_norm_sel)
+
+        pval_norm_row = QtWidgets.QHBoxLayout()
+        pval_norm_label = QtWidgets.QVBoxLayout()
+        pval_norm_label.addWidget(QtWidgets.QLabel('p-value_norm (DESeq2):'))
+        pval_norm_hint = QtWidgets.QLabel('(good for low crush)')
+        hint_font = pval_norm_hint.font()
+        hint_font.setPointSize(max(hint_font.pointSize() - 2, 6))
+        pval_norm_hint.setFont(hint_font)
+        pval_norm_label.addWidget(pval_norm_hint)
+        pval_norm_row.addLayout(pval_norm_label)
+        pval_norm_row.addWidget(pval_norm_sel)
+        layout.addLayout(pval_norm_row)
+
         row('% in-frame:Forward:', infr_sel)
-        row('Enrichment Fold:', fold_sel)
+        row('AdjEnr (%s vs Vector):' % bait_label, adjenr_fold_sel)
+        row('DESeq2 Fold (%s vs Vector):' % bait_label, deseq2_fold_sel)
         row('Sort by:', sort_combo)
 
         find_row = QtWidgets.QHBoxLayout()
@@ -1739,7 +1778,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
         widgets = {
             'p': p_sel, 'pval_raw': pval_raw_sel, 'pval_norm': pval_norm_sel,
-            'infr': infr_sel, 'fold': fold_sel,
+            'infr': infr_sel, 'adjenr_fold': adjenr_fold_sel, 'deseq2_fold': deseq2_fold_sel,
             'sort_combo': sort_combo, 'find_btn': find_btn, 'count_label': count_label,
             'export_btn': export_btn,
         }
@@ -1763,6 +1802,12 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         computes for the Find count) - a quick-scan view, not the full
         report, so only a small fixed subset of columns is shown."""
         panel = QtWidgets.QWidget()
+        # Proportionally wider from the start, rather than relying on the
+        # table columns' own fixed-width sum (440px) plus whatever padding
+        # happens to fall out of the layout - gives the hit-match tables
+        # real breathing room next to the criteria panel immediately, no
+        # manual resize needed to see the full columns.
+        panel.setMinimumWidth(560)
         layout = QtWidgets.QVBoxLayout(panel)
 
         self.b1_results_table, b1_results_group = self._build_results_table('Bait1')
@@ -1809,8 +1854,8 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
     def _criteria_dict(self, widgets):
         return {'p': widgets['p'].value, 'pval_raw': widgets['pval_raw'].value,
-               'pval_norm': widgets['pval_norm'].value,
-               'infr': widgets['infr'].value, 'fold': widgets['fold'].value}
+               'pval_norm': widgets['pval_norm'].value, 'infr': widgets['infr'].value,
+               'adjenr_fold': widgets['adjenr_fold'].value, 'deseq2_fold': widgets['deseq2_fold'].value}
 
     def _matching_genes(self, bait_num, widgets):
         source = self._active_source
