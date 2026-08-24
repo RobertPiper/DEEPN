@@ -9,10 +9,12 @@ import re
 import csv
 import time
 import glob
+import tempfile
 from datetime import datetime
 
 from PyQt5 import QtCore, QtGui, QtWidgets, uic
 import xlsxwriter as xls
+import openpyxl
 
 import functions.fileio_gui as f
 import functions.stat_collation as sc
@@ -382,7 +384,7 @@ def _sort_key_value(gene, sort_key, maps):
 
 
 def _as_float_or_none(val):
-    if val is None or val == 'NA':
+    if val is None or val == 'NA' or val == '':
         return None
     return float(val)
 
@@ -417,111 +419,151 @@ def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, jun
     return maps
 
 
-# The general .csv - a full, self-contained snapshot of one run's computed
-# results: per-dataset ppm, per-dataset junction percentages (flattened
-# from .bqp - the raw pickle objects aren't stored, just what
-# get_junction_stats() derives from them), every DESeq2 stats column, and
-# every Bayesian stats column. Rich enough that _write_workbook produces
-# the exact same full report from a reloaded file as from a fresh run -
-# the .xlsx is always generated FROM this .csv's data, whether that data
-# was just computed or loaded back later. Deliberately does NOT carry the
-# original gene_count_summary/.bqp file paths - those can change machine
-# to machine, and re-running the actual DESeq2/MCMC computation from a
-# reloaded file isn't supported (see load_sm_file_clicked).
-STATS_DATASET_KEYS = ['Bait1S', 'Bait1N', 'Bait2S', 'Bait2N', 'Vector1S', 'Vector1N', 'Vector2S', 'Vector2N']
-JUNCTION_CATEGORIES = ['frame_orf', 'upstream', 'in_orf', 'downstream',
-                       'in_frame', 'not_in_frame', 'backwards', 'intron']
+# The general .csv - a flat dump of the exact same rich report
+# _write_workbook produces as .xlsx (metadata, OVERDISPERSION, CRUSH
+# table, three-row header, every column block), built by writing that
+# .xlsx to a temp file and converting it row-by-row (see
+# export_data_csv_clicked / sm6_batch.py's xlsx_to_csv). Reloading it
+# (_parse_sm_csv) locates the same landmarks by their literal text
+# ('Gene', 'OVERDISPERSION', 'Bait1 stats'/'Bait2 stats'/'Vector stats')
+# rather than fixed row/column numbers, so it isn't fragile to a run
+# having no Bait2 or the overdispersion rows differing in count.
+#
+# What survives the round-trip: everything in the Bait1/Bait2/Vector-
+# stats blocks (ppm, raw enrichment, Enr/AdjEnr, DESeq2 log2fold/p-value,
+# %in-frame:Forward) - full fidelity, this is the primary content and
+# exactly what hit-criteria filtering needs. What does NOT survive: the
+# old-report section's extra per-dataset junction categories (in_orf/
+# upstream/downstream/backwards/intron - only in_frame is captured) and
+# Vector1/Vector2's individual (pre-averaging) ppm. A workbook rebuilt
+# from a loaded .csv therefore always passes include_old_report=False to
+# _write_workbook (see _source_write_args) - omitting that section
+# entirely rather than fabricating zeros for the categories that didn't
+# round-trip. The original gene_count_summary/.bqp file paths aren't
+# carried either - those can change machine to machine, and re-running
+# the actual DESeq2/MCMC computation from a reloaded file isn't
+# supported (see load_sm_file_clicked).
+
+def _find_row(rows, col0_value):
+    for i, row in enumerate(rows):
+        if row and row[0] == col0_value:
+            return i
+    return None
 
 
-def _write_general_csv(path, name, genes, has_bait2, ppm_data, stats, bayesian_stats, bqp_data,
-                       overdispersion, bayes_overdispersion, log_cb=None):
-    dataset_keys = [k for k in STATS_DATASET_KEYS if has_bait2 or not k.startswith('Bait2')]
-    stats_fields = sorted({key for row in stats.values() for key in row})
-    bayes_fields = sorted({key for row in bayesian_stats.values() for key in row})
-
-    with open(path, 'w', newline='') as fh:
-        fh.write('#name,%s\n' % name)
-        fh.write('#has_bait2,%s\n' % has_bait2)
-        fh.write('#overdispersion,%s\n' % ('' if overdispersion is None else overdispersion))
-        fh.write('#bayes_vector_nonselect,%s\n' % bayes_overdispersion.get('vector_nonselect', ''))
-        fh.write('#bayes_vector_bait_nonselect,%s\n' % bayes_overdispersion.get('vector_bait_nonselect', ''))
-        fh.write('#bayes_vector_select,%s\n' % bayes_overdispersion.get('vector_select', ''))
-        fh.write('#stats_fields,%s\n' % ';'.join(stats_fields))
-        fh.write('#bayes_fields,%s\n' % ';'.join(bayes_fields))
-        fieldnames = (['Gene'] + ['ppm_%s' % k for k in dataset_keys] +
-                     ['jn_%s_%s' % (k, c) for k in dataset_keys for c in JUNCTION_CATEGORIES] +
-                     stats_fields + bayes_fields)
-        w = csv.DictWriter(fh, fieldnames=fieldnames)
-        w.writeheader()
-        for i, g in enumerate(genes):
-            row = {'Gene': g}
-            for k in dataset_keys:
-                row['ppm_%s' % k] = ppm_data.get(k, {}).get(g, 0.0)
-                gstat = sc.get_junction_stats(bqp_data.get(k, {}), g)
-                for c in JUNCTION_CATEGORIES:
-                    row['jn_%s_%s' % (k, c)] = gstat.get(c, 0)
-            srow = stats.get(g, {})
-            row.update({f: srow.get(f, '') for f in stats_fields})
-            brow = bayesian_stats.get(g, {})
-            row.update({f: brow.get(f, '') for f in bayes_fields})
-            w.writerow(row)
-            if log_cb and i and i % 5000 == 0:
-                log_cb("  wrote %d/%d genes..." % (i, len(genes)))
+def _find_col(row, value):
+    for i, cell in enumerate(row):
+        if cell == value:
+            return i
+    return None
 
 
-def _read_general_csv(path):
-    """Reverses _write_general_csv into exactly what _write_workbook (and
-    _build_bait_value_maps) need: ppm_data, stats, bayesian_stats, and a
-    junction_fn backed by the flattened jn_* columns instead of real .bqp
-    data."""
-    meta = {}
+def _to_float(v):
+    if v in (None, ''):
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _parse_sm_csv(path):
     with open(path, newline='') as fh:
-        pos = fh.tell()
-        line = fh.readline()
-        while line.startswith('#'):
-            key, _, val = line[1:].rstrip('\n').partition(',')
-            meta[key] = val
-            pos = fh.tell()
-            line = fh.readline()
-        fh.seek(pos)
-        rows = list(csv.DictReader(fh))
+        rows = list(csv.reader(fh))
 
-    if 'has_bait2' not in meta:
-        raise ValueError("Couldn't find the expected header - is this a Stat Maker general .csv file?")
-    has_bait2 = meta['has_bait2'] == 'True'
-    name = meta.get('name') or os.path.basename(path)
-    overdispersion = float(meta['overdispersion']) if meta.get('overdispersion') else None
-    bayes_overdispersion = {}
-    for k in ('vector_nonselect', 'vector_bait_nonselect', 'vector_select'):
-        v = meta.get('bayes_%s' % k, '')
-        if v:
-            bayes_overdispersion[k] = float(v)
-    stats_fields = [f for f in meta.get('stats_fields', '').split(';') if f]
-    bayes_fields = [f for f in meta.get('bayes_fields', '').split(';') if f]
+    group_row_i = _find_row(rows, 'Gene')
+    if group_row_i is None:
+        raise ValueError("Couldn't find the 'Gene' header - is this a Stat Maker general .csv file?")
+    field_row_i = group_row_i + 2
+    field_row = rows[field_row_i]
+    data_start = field_row_i + 1
 
-    dataset_keys = [k for k in STATS_DATASET_KEYS if has_bait2 or not k.startswith('Bait2')]
-    genes = []
-    ppm_data = {k: {} for k in dataset_keys}
-    junction_flat = {}
-    stats, bayesian_stats = {}, {}
-    for row in rows:
-        g = row.get('Gene')
-        if not g:
+    group_row = rows[group_row_i]
+    bait1_col = _find_col(group_row, 'Bait1 stats')
+    bait2_col = _find_col(group_row, 'Bait2 stats')
+    vector_col = _find_col(group_row, 'Vector stats')
+    if bait1_col is None or vector_col is None:
+        raise ValueError("Couldn't find the Bait1/Vector stats blocks - is this a Stat Maker general .csv file?")
+    has_bait2 = bait2_col is not None
+
+    # Fixed field order within each block - see _write_workbook's `fields`/
+    # `vector_fields` lists.
+    BAIT_OFFSETS = {'ppm_non': 0, 'ppm_sel': 1, 'ratio': 2, 'enr': 3, 'adjenr': 4,
+                    'deseq2': 5, 'p': 6, 'pval': 7, 'infr_sel': 8, 'infr_non': 9}
+    VECTOR_OFFSETS = {'ppm_non': 0, 'ppm_sel': 1, 'ratio': 2, 'deseq2': 3, 'pval': 4,
+                      'infr_sel': 5, 'infr_non': 6, 'outframe_non': 7, 'backward_non': 8}
+
+    overdisp_i = _find_row(rows, 'OVERDISPERSION')
+    overdispersion, bayes_overdispersion = None, {}
+    if overdisp_i is not None:
+        for r in rows[overdisp_i + 1:group_row_i]:
+            if not r or len(r) < 2:
+                continue
+            label, val = r[0], _to_float(r[1])
+            if val is None:
+                continue
+            if label == 'Vector non-select':
+                bayes_overdispersion['vector_nonselect'] = val
+            elif label == 'vector+Bait non-select':
+                bayes_overdispersion['vector_bait_nonselect'] = val
+            elif label == 'Vector select':
+                bayes_overdispersion['vector_select'] = val
+            elif label == 'DESeq Vector non-select':
+                overdispersion = val
+
+    genes, ppm_data = [], {k: {} for k in ('Bait1S', 'Bait1N', 'Bait2S', 'Bait2N',
+                                           'Vector1S', 'Vector1N', 'Vector2S', 'Vector2N')}
+    junction_flat, stats, bayesian_stats = {}, {}, {}
+    for row in rows[data_start:]:
+        if not row or not row[0]:
             continue
+        g = row[0]
         genes.append(g)
-        for k in dataset_keys:
-            v = row.get('ppm_%s' % k, '')
-            ppm_data[k][g] = float(v) if v not in ('', None) else 0.0
-            pct = {}
-            for c in JUNCTION_CATEGORIES:
-                jv = row.get('jn_%s_%s' % (k, c), '')
-                pct[c] = float(jv) if jv not in ('', None) else 0.0
-            junction_flat[(k, g)] = pct
-        stats[g] = {f: row.get(f, '') for f in stats_fields}
-        bayesian_stats[g] = {f: row.get(f, '') for f in bayes_fields}
+        srow, brow = {}, {}
+
+        def bait_vals(start_col, bait_num, suffix):
+            get = lambda key: row[start_col + BAIT_OFFSETS[key]] if start_col + BAIT_OFFSETS[key] < len(row) else ''
+            ppm_data['Bait%dN' % bait_num][g] = _to_float(get('ppm_non')) or 0.0
+            ppm_data['Bait%dS' % bait_num][g] = _to_float(get('ppm_sel')) or 0.0
+            brow['Enr%d' % bait_num] = get('enr')
+            brow['AdjEnr%d' % bait_num] = get('adjenr')
+            srow['log2FoldChange_%s_vs_vector' % suffix] = get('deseq2')
+            brow['pBait%d_Vec' % bait_num] = get('p')
+            srow['pvalue_%s_vs_vector' % suffix] = get('pval')
+            junction_flat[('Bait%dS' % bait_num, g)] = {'in_frame': _to_float(get('infr_sel')) or 0.0}
+            junction_flat[('Bait%dN' % bait_num, g)] = {'in_frame': _to_float(get('infr_non')) or 0.0}
+
+        bait_vals(bait1_col, 1, 'bait1')
+        if has_bait2:
+            bait_vals(bait2_col, 2, 'bait2')
+
+        get_v = lambda key: row[vector_col + VECTOR_OFFSETS[key]] if vector_col + VECTOR_OFFSETS[key] < len(row) else ''
+        v_non, v_sel = _to_float(get_v('ppm_non')) or 0.0, _to_float(get_v('ppm_sel')) or 0.0
+        # Only the Vector1/Vector2 *average* survives the round-trip - used
+        # for both replicate slots as the closest available approximation.
+        for vk in ('Vector1N', 'Vector2N'):
+            ppm_data[vk][g] = v_non
+        for vk in ('Vector1S', 'Vector2S'):
+            ppm_data[vk][g] = v_sel
+        srow['log2FoldChange_vector'] = get_v('deseq2')
+        srow['pvalue_vector'] = get_v('pval')
+        infr_sel_v, infr_non_v = _to_float(get_v('infr_sel')) or 0.0, _to_float(get_v('infr_non')) or 0.0
+        outframe_non_v = _to_float(get_v('outframe_non')) or 0.0
+        backward_non_v = _to_float(get_v('backward_non')) or 0.0
+        for vk in ('Vector1S', 'Vector2S'):
+            junction_flat[(vk, g)] = {'in_frame': infr_sel_v}
+        # Vector1/Vector2 aren't separately recoverable (the CSV only has
+        # their average) - the same value in both slots, so averaging them
+        # back in _write_workbook's Vector block reproduces it exactly.
+        for vk in ('Vector1N', 'Vector2N'):
+            junction_flat[(vk, g)] = {'in_frame': infr_non_v, 'not_in_frame': outframe_non_v,
+                                      'backwards': backward_non_v}
+
+        stats[g] = srow
+        bayesian_stats[g] = brow
 
     def junction_fn(dkey, gene):
-        return junction_flat.get((dkey, gene), {c: 0.0 for c in JUNCTION_CATEGORIES})
+        return junction_flat.get((dkey, gene), {'in_frame': 0.0, 'not_in_frame': 0.0, 'backwards': 0.0})
 
     dataset_labels = {
         'Bait1N': 'Bait1_Non-Selected', 'Bait1S': 'Bait1_Selected',
@@ -529,11 +571,13 @@ def _read_general_csv(path):
         'Vector1N': 'Vector_Non-Selected_1', 'Vector2N': 'Vector_Non-Selected_2',
         'Vector1S': 'Vector_Selected_1', 'Vector2S': 'Vector_Selected_2',
     }
+    dataset_keys = ['Bait1S', 'Bait1N'] + (['Bait2S', 'Bait2N'] if has_bait2 else []) + \
+                  ['Vector1S', 'Vector1N', 'Vector2S', 'Vector2N']
     csv_paths = {k: '(loaded from %s)' % os.path.basename(path) for k in dataset_keys}
 
     return {
-        'name': name, 'genes': genes, 'has_bait2': has_bait2, 'src_path': path,
-        'ppm_data': ppm_data, 'stats': stats, 'bayesian_stats': bayesian_stats,
+        'name': os.path.splitext(os.path.basename(path))[0], 'genes': genes, 'has_bait2': has_bait2,
+        'src_path': path, 'ppm_data': ppm_data, 'stats': stats, 'bayesian_stats': bayesian_stats,
         'junction_fn': junction_fn, 'csv_paths': csv_paths, 'dataset_labels': dataset_labels,
         'overdispersion': overdispersion, 'bayes_overdispersion': bayes_overdispersion,
     }
@@ -1085,7 +1129,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
     def _write_workbook(self, out_path, csv_paths, dataset_labels, overdispersion,
                         bayes_overdispersion, stats, bayesian_stats, bqp_data, genes, has_bait2, log_cb,
-                        sort_spec=None, criteria=None, ppm_data=None, junction_fn=None):
+                        sort_spec=None, criteria=None, ppm_data=None, junction_fn=None, include_old_report=True):
         """sort_spec/criteria: both None for the plain, unsorted/unfiltered
         export. Otherwise sort_spec=(bait_num, sort_key) with sort_key in
         ('deseq2','enr','adjenr'), and criteria=that bait's threshold dict
@@ -1345,51 +1389,56 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         # kept alongside them, not replaced, so both views are in one report.
         # Block titles for this section sit on mid_row (group_row has no
         # entries here), one row lower than the Bait1/Bait2/Vector titles.
-        deseq2_blocks = [('Bait1 Enrichment (DESeq2)', 'bait1', ['pvalue', 'log2FoldChange', 'Enrichment_score'])]
-        if has_bait2:
-            deseq2_blocks.append(('Bait2 Enrichment (DESeq2)', 'bait2', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
-        deseq2_blocks.append(('Vector Enrichment (DESeq2)', 'vector', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
-        if has_bait2:
-            deseq2_blocks.append(('Bait1 vs Bait2 Specificity (DESeq2)', 'specificity', ['pvalue', 'log2FoldChange']))
-        deseq2_blocks.append(('Bait1 vs Vector (DESeq2)', 'bait1_vs_vector', ['pvalue', 'log2FoldChange']))
-        if has_bait2:
-            deseq2_blocks.append(('Bait2 vs Vector (DESeq2)', 'bait2_vs_vector', ['pvalue', 'log2FoldChange']))
+        # Skipped (include_old_report=False) when rebuilding from a loaded
+        # general .csv - that source doesn't carry the extra per-dataset
+        # junction category breakdown (in_orf/upstream/downstream/etc, only
+        # in_frame survives the round-trip) this section needs, and writing
+        # it with fabricated zeros would be actively misleading rather than
+        # just incomplete.
+        stat_field_cols, bayesian_field_cols, junction_field_cols = [], [], []
+        if include_old_report:
+            deseq2_blocks = [('Bait1 Enrichment (DESeq2)', 'bait1', ['pvalue', 'log2FoldChange', 'Enrichment_score'])]
+            if has_bait2:
+                deseq2_blocks.append(('Bait2 Enrichment (DESeq2)', 'bait2', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
+            deseq2_blocks.append(('Vector Enrichment (DESeq2)', 'vector', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
+            if has_bait2:
+                deseq2_blocks.append(('Bait1 vs Bait2 Specificity (DESeq2)', 'specificity', ['pvalue', 'log2FoldChange']))
+            deseq2_blocks.append(('Bait1 vs Vector (DESeq2)', 'bait1_vs_vector', ['pvalue', 'log2FoldChange']))
+            if has_bait2:
+                deseq2_blocks.append(('Bait2 vs Vector (DESeq2)', 'bait2_vs_vector', ['pvalue', 'log2FoldChange']))
 
-        stat_field_cols = []  # (stats_dict_key, worksheet_col)
-        for label, suffix, fields in deseq2_blocks:
+            for label, suffix, fields in deseq2_blocks:
+                start_col = col
+                for fld in fields:
+                    stats_key = '%s_%s' % (fld, suffix)
+                    ws.write(field_row, col, fld, fmt_field)
+                    stat_field_cols.append((stats_key, col))
+                    col += 1
+                ws.merge_range(mid_row, start_col, mid_row, col - 1, label, fmt_group_deseq2)
+
+            if has_bait2:
+                bayesian_fields = ['AdjEnr1', 'AdjEnr2', 'pBait1_Vec', 'pBait2_Vec',
+                                   'pBait1_Bait2', 'pBait2_Bait1', 'pBait1', 'pBait2']
+            else:
+                bayesian_fields = ['AdjEnr', 'p']
             start_col = col
-            for fld in fields:
-                stats_key = '%s_%s' % (fld, suffix)
+            for fld in bayesian_fields:
                 ws.write(field_row, col, fld, fmt_field)
-                stat_field_cols.append((stats_key, col))
+                bayesian_field_cols.append((fld, col))
                 col += 1
-            ws.merge_range(mid_row, start_col, mid_row, col - 1, label, fmt_group_deseq2)
+            ws.merge_range(mid_row, start_col, mid_row, col - 1, 'Bayesian Enrichment (MCMC/JAGS)', fmt_group_bayesian)
 
-        if has_bait2:
-            bayesian_fields = ['AdjEnr1', 'AdjEnr2', 'pBait1_Vec', 'pBait2_Vec',
-                               'pBait1_Bait2', 'pBait2_Bait1', 'pBait1', 'pBait2']
-        else:
-            bayesian_fields = ['AdjEnr', 'p']
-        bayesian_field_cols = []  # (bayesian_dict_key, worksheet_col)
-        start_col = col
-        for fld in bayesian_fields:
-            ws.write(field_row, col, fld, fmt_field)
-            bayesian_field_cols.append((fld, col))
-            col += 1
-        ws.merge_range(mid_row, start_col, mid_row, col - 1, 'Bayesian Enrichment (MCMC/JAGS)', fmt_group_bayesian)
-
-        JUNCTION_COLUMNS = ['inframe_inorf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron']
-        JUNCTION_COLUMN_KEYS = {'inframe_inorf': 'frame_orf'}
-        dataset_order = ['Bait1N', 'Bait1S'] + (['Bait2N', 'Bait2S'] if has_bait2 else []) + \
-                        ['Vector1N', 'Vector2N', 'Vector1S', 'Vector2S']
-        junction_field_cols = []  # (dataset_key, junction_col, worksheet_col)
-        for k in dataset_order:
-            start_col = col
-            for jc in JUNCTION_COLUMNS:
-                ws.write(field_row, col, jc, fmt_field)
-                junction_field_cols.append((k, jc, col))
-                col += 1
-            ws.merge_range(mid_row, start_col, mid_row, col - 1, dataset_labels[k], fmt_group_junction)
+            JUNCTION_COLUMNS = ['inframe_inorf', 'upstream', 'in_orf', 'downstream', 'in_frame', 'backwards', 'intron']
+            JUNCTION_COLUMN_KEYS = {'inframe_inorf': 'frame_orf'}
+            dataset_order = ['Bait1N', 'Bait1S'] + (['Bait2N', 'Bait2S'] if has_bait2 else []) + \
+                            ['Vector1N', 'Vector2N', 'Vector1S', 'Vector2S']
+            for k in dataset_order:
+                start_col = col
+                for jc in JUNCTION_COLUMNS:
+                    ws.write(field_row, col, jc, fmt_field)
+                    junction_field_cols.append((k, jc, col))
+                    col += 1
+                ws.merge_range(mid_row, start_col, mid_row, col - 1, dataset_labels[k], fmt_group_junction)
 
         last_col = col - 1
 
@@ -1430,10 +1479,10 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 elif kind == 'bayesian':
                     # Leave genuinely blank (not '') when missing - see the
                     # sorting-order note further down for why this matters.
-                    if extra in brow and brow[extra] != 'NA':
+                    if extra in brow and brow[extra] not in ('NA', ''):
                         ws.write_number(data_row, wcol, float(brow[extra]), num_fmt)
                 elif kind == 'deseq2':
-                    if extra in srow and srow[extra] != 'NA':
+                    if extra in srow and srow[extra] not in ('NA', ''):
                         ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
                 elif kind == 'junction':
                     dkey, jkey = extra
@@ -1450,7 +1499,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                     p_non = vector_mean_ppm(gene, 'N')
                     ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), num_fmt)
                 elif kind == 'deseq2':
-                    if extra in srow and srow[extra] != 'NA':
+                    if extra in srow and srow[extra] not in ('NA', ''):
                         ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
                 elif kind == 'junction':
                     cond, jkey = extra
@@ -1459,10 +1508,10 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                     ws.write_number(data_row, wcol, (d1[jkey] + d2[jkey]) / 2, num_fmt)
 
             for stats_key, wcol in stat_field_cols:
-                if stats_key in srow and srow[stats_key] != 'NA':
+                if stats_key in srow and srow[stats_key] not in ('NA', ''):
                     ws.write_number(data_row, wcol, float(srow[stats_key]), num_fmt)
             for fld, wcol in bayesian_field_cols:
-                if fld in brow and brow[fld] != 'NA':
+                if fld in brow and brow[fld] not in ('NA', ''):
                     ws.write_number(data_row, wcol, float(brow[fld]), num_fmt)
             for k, jc, wcol in junction_field_cols:
                 gstat = junction_fn(k, gene)
@@ -1630,17 +1679,21 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     def _source_write_args(self, source):
         """Common args _write_workbook needs, regardless of whether
         `source` came from a fresh run (self._last_run, real bqp_data) or
-        a loaded general .csv (_read_general_csv, flattened junction_fn)."""
+        a loaded general .csv (_parse_sm_csv, flattened junction_fn).
+        include_old_report is False for a loaded file - see _parse_sm_csv's
+        docstring for what doesn't survive that round-trip."""
         if source['kind'] == 'run':
             run = self._last_run
             return dict(csv_paths=run['csv_paths'], dataset_labels=run['dataset_labels'],
                        overdispersion=run['overdispersion'], bayes_overdispersion=run['bayes_overdispersion'],
                        stats=run['stats'], bayesian_stats=run['bayesian_stats'], bqp_data=run['bqp_data'],
-                       ppm_data=run['ppm_data'], junction_fn=_default_junction_fn(run['bqp_data']))
+                       ppm_data=run['ppm_data'], junction_fn=_default_junction_fn(run['bqp_data']),
+                       include_old_report=True)
         return dict(csv_paths=source['csv_paths'], dataset_labels=source['dataset_labels'],
                    overdispersion=source['overdispersion'], bayes_overdispersion=source['bayes_overdispersion'],
                    stats=source['stats'], bayesian_stats=source['bayesian_stats'], bqp_data={},
-                   ppm_data=source['ppm_data'], junction_fn=source['junction_fn'])
+                   ppm_data=source['ppm_data'], junction_fn=source['junction_fn'],
+                   include_old_report=False)
 
     @QtCore.pyqtSlot()
     def export_default_clicked(self):
@@ -1652,7 +1705,8 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self._write_workbook(out_path, args['csv_paths'], args['dataset_labels'], args['overdispersion'],
                              args['bayes_overdispersion'], args['stats'], args['bayesian_stats'], args['bqp_data'],
                              source['genes'], source['has_bait2'], self.log,
-                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'])
+                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'],
+                             include_old_report=args['include_old_report'])
         self.log("Wrote %s" % out_path)
         self.statusbar.showMessage("Wrote %s" % out_name, 8000)
 
@@ -1668,7 +1722,8 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                              args['bayes_overdispersion'], args['stats'], args['bayesian_stats'], args['bqp_data'],
                              source['genes'], source['has_bait2'], self.log,
                              sort_spec=(bait_num, sort_key), criteria=criteria,
-                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'])
+                             ppm_data=args['ppm_data'], junction_fn=args['junction_fn'],
+                             include_old_report=args['include_old_report'])
         self.log("Wrote %s" % out_path)
         self.statusbar.showMessage("Wrote %s" % out_name, 8000)
 
@@ -1680,21 +1735,40 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
     def export_sorted_b2_clicked(self):
         self._export_sorted(2, self.b2_criteria, 'SORT2_')
 
+    @staticmethod
+    def _xlsx_to_csv(xlsx_path, csv_path):
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        with open(csv_path, 'w', newline='') as f:
+            w = csv.writer(f)
+            for row in ws.iter_rows(values_only=True):
+                vals = list(row)
+                while vals and vals[-1] is None:
+                    vals.pop()
+                w.writerow(["" if v is None else v for v in vals])
+
     @QtCore.pyqtSlot()
     def export_data_csv_clicked(self):
-        """The general .csv - a full, self-contained snapshot of the
-        current run's computed results (see _write_general_csv). This is
-        what Load SM File... reads back later; the .xlsx exports are
-        always generated from this same data, whether fresh or reloaded."""
+        """The general .csv - a flat dump of the exact same rich report
+        the .xlsx exports produce (see _parse_sm_csv's docstring). Built
+        by writing to a temp .xlsx and converting it, then discarding the
+        temp file - this is what Load SM File... reads back later."""
         run = self._last_run
         if run is None:
             return
         name = self.export_name_edit.text().strip() or datetime.now().strftime('stat_maker_%d%b%Y-%H%M%S')
         out_path = os.path.join(run['out_folder'], name + '.csv')
-        self.log("Writing general .csv (%d genes)..." % len(run['genes']))
-        _write_general_csv(out_path, name, run['genes'], run['has_bait2'], run['ppm_data'],
-                           run['stats'], run['bayesian_stats'], run['bqp_data'],
-                           run['overdispersion'], run['bayes_overdispersion'], log_cb=self.log)
+        self.log("Building report (temp xlsx) for %s ..." % out_path)
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_xlsx = tmp.name
+        try:
+            self._write_workbook(tmp_xlsx, run['csv_paths'], run['dataset_labels'], run['overdispersion'],
+                                 run['bayes_overdispersion'], run['stats'], run['bayesian_stats'], run['bqp_data'],
+                                 run['genes'], run['has_bait2'], self.log, ppm_data=run['ppm_data'])
+            self.log("Converting to %s ..." % out_path)
+            self._xlsx_to_csv(tmp_xlsx, out_path)
+        finally:
+            os.remove(tmp_xlsx)
         self.log("Wrote %s" % out_path)
         self.statusbar.showMessage("Wrote %s" % os.path.basename(out_path), 8000)
 
@@ -1705,7 +1779,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         if not path:
             return
         try:
-            parsed = _read_general_csv(path)
+            parsed = _parse_sm_csv(path)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Load Failed", str(e))
             return
