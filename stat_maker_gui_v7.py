@@ -27,7 +27,7 @@ R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_enrichement_stats_v5.R')
 BAYESIAN_R_SCRIPT_PATH = os.path.join('r_scripts', 'run_Y2H_bayesian_stats_v3.R')
 BAYESIAN_THRESHOLD_PPM = 3  # matches Stat Maker v1/v2's threshold_sbx default
 
-METHOD_INFO_TEXT = """STAT MAKER v6 - METHOD OVERVIEW
+METHOD_INFO_TEXT = """STAT MAKER v7 - METHOD OVERVIEW
 
 WHAT THIS PROGRAM DOES
 
@@ -102,7 +102,10 @@ OUTPUT TABLE LAYOUT
       DESeq2 (BaitN vs Vector) [log2 FC row]  - DESeq2's log2FoldChange for the
                                                  same Bait-vs-Vector contrast
       pBaitN_Vec                              - Bayesian posterior probability
-      DESeq2 (BaitN vs Vector) [p-value row]  - DESeq2's p-value for that contrast
+      DESeq2 (BaitN vs Vector) [p-value_raw]  - DESeq2's p-value, raw counts +
+                                                 poscounts normalization
+      DESeq2 (BaitN vs Vector) [p-value_norm] - DESeq2's p-value, normalized
+                                                 PPM data (Y2H-SCORES method)
       in-frame:Forward (Select/Non)           - % of that dataset's junctions
                                                  in-frame, forward orientation
 
@@ -177,7 +180,11 @@ STATISTICS METHOD (DESeq2)
   gene_count_summary CSV's own header) - not PPM directly. Earlier versions
   fed PPM straight in with normalized=TRUE, which bypassed DESeq2's own
   size-factor normalization entirely (every sample's size factor forced to
-  1). v5 instead lets DESeq2 estimate its own size factors via the
+  1). Stat Maker re-adds this as a distinct, parallel procedure: DESeq2's
+  p-value computed on normalized PPM data (p-value_norm), included
+  alongside the count-based result in the output.
+
+  Stat Maker also lets DESeq2 estimate its own size factors via the
   "poscounts" method (estimateSizeFactors(dds, type="poscounts")), which
   computes each gene's normalization reference from only that gene's
   nonzero values - so a gene isn't excluded from the reference just because
@@ -193,12 +200,15 @@ STATISTICS METHOD (DESeq2)
   a bait's casualty rate and its hit count at p<0.01 dropped from -0.73 to
   0.18, and the hit-count range compressed roughly 10-fold). The trade-off
   is a modestly higher empirical false-positive rate on true-null
-  comparisons (~1.7% vs ~1.1% at nominal p<0.01) - judged acceptable given
-  the much larger systematic bias it removes, especially since real hits
-  are expected to be screened downstream for genuine absolute PPM
-  enrichment (Selected > Non-Selected), which independently catches the
-  "less de-enriched than vector, but not really enriched" pattern that
-  drove most low-crush false calls in the first place.
+  comparisons (~1.7% vs ~1.1% at nominal p<0.01). Most of these false
+  positives are eliminated when an enrichment threshold of >1x is imposed,
+  which ensures that only preys that increased their ppm under Select
+  conditions are chosen.
+
+  Stat Maker therefore reports the DESeq2 p-value computed two ways: on
+  raw counts with poscounts size-factor normalization (p-value_raw), and
+  on normalized PPM data as described in Y2H-SCORES (p-value_norm). With
+  an enrichment threshold in place, the two converge.
 
   In practical terms: a low-crush bait (Extinguished well under ~80%, see
   CRUSH above) lets many non-specific prey survive selection just because
@@ -326,11 +336,27 @@ class CollateThread(QtCore.QThread):
 RAW_ENR_EPS = 0.05
 
 
+def _raw_enrichment_ratio(p_sel, p_non):
+    """Linear ppm select/non ratio. The numerator is used as-is - no
+    pseudocount - so a 0-Select gene naturally comes out to ratio 0 (0 /
+    anything positive is 0), rather than a symmetric pseudocount's
+    misleading "unchanged" (ratio 1) for a gene that's actually absent.
+    The denominator is floored at RAW_ENR_EPS rather than having it added:
+    p_non below that floor is treated as RAW_ENR_EPS (avoids a division by
+    a near-zero number blowing the ratio up), but any p_non already at or
+    above it is used exactly as measured, not inflated by +0.05."""
+    return p_sel / max(p_non, RAW_ENR_EPS)
+
+
 def _signed_fold(ratio):
     """Linear ratio -> intuitive signed fold change: 2.0 -> +2 ("2x
     enriched"), 0.5 -> -2 ("2x de-enriched"). Matches how a bench biologist
     would describe fold change, unlike a plain ratio which reports both
-    directions as awkward decimals."""
+    directions as awkward decimals. ratio<=0 (a gene absent in Select, see
+    _raw_enrichment_ratio) maps to -inf - maximally de-enriched, so it
+    fails every positive fold threshold rather than raising ZeroDivisionError."""
+    if ratio <= 0:
+        return float('-inf')
     return ratio if ratio >= 1 else -1.0 / ratio
 
 
@@ -345,20 +371,26 @@ def _signed_fold(ratio):
 # no raw source data needed).
 
 def _gene_passes_criteria(gene, criteria, maps):
-    """criteria: dict with keys 'p', 'pval', 'infr', 'fold' - each None (or
-    0 for 'infr') means that threshold isn't set and never blocks a gene.
-    Once a threshold IS set, a gene missing the underlying value fails it
-    (can't confirm it clears a bar that isn't there)."""
+    """criteria: dict with keys 'p', 'pval_raw', 'pval_norm', 'infr', 'fold'
+    - each None (or 0 for 'infr') means that threshold isn't set and never
+    blocks a gene. Once a threshold IS set, a gene missing the underlying
+    value fails it (can't confirm it clears a bar that isn't there)."""
     p = criteria.get('p')
     if p is not None:
         val = maps['p'].get(gene)
         if val is None or not (val > p):
             return False
 
-    pval = criteria.get('pval')
-    if pval is not None:
-        val = maps['pval'].get(gene)
-        if val is None or not (val <= pval):
+    pval_raw = criteria.get('pval_raw')
+    if pval_raw is not None:
+        val = maps['pval_raw'].get(gene)
+        if val is None or not (val <= pval_raw):
+            return False
+
+    pval_norm = criteria.get('pval_norm')
+    if pval_norm is not None:
+        val = maps['pval_norm'].get(gene)
+        if val is None or not (val <= pval_norm):
             return False
 
     infr = criteria.get('infr') or 0
@@ -395,6 +427,42 @@ def _default_junction_fn(bqp_data):
     return lambda dkey, gene: sc.get_junction_stats(bqp_data.get(dkey, {}), gene)
 
 
+def _bait_vs_vector_keys(has_bait2):
+    keys = ['pvalue_bait1_vs_vector', 'log2FoldChange_bait1_vs_vector']
+    if has_bait2:
+        keys += ['pvalue_bait2_vs_vector', 'log2FoldChange_bait2_vs_vector']
+    return keys
+
+
+def _suffix_bait_vs_vector(stats, has_bait2, suffix):
+    """v7: DESeq2 now runs twice per collation - once on raw counts +
+    poscounts (p-value_raw, the v5/v6 method) and once on normalized PPM
+    data per Y2H-SCORES (p-value_norm, the pre-v5 method, re-added
+    alongside rather than replaced). Only the Bait-vs-Vector contrast gets
+    this raw/norm split (that's what the hit-criteria panel filters on);
+    the within-culture Enrichment/Specificity contrasts stay single-
+    sourced from the raw/poscounts run, unchanged. Renames
+    pvalue_baitN_vs_vector/log2FoldChange_baitN_vs_vector to end in
+    _raw/_norm in place."""
+    keys = _bait_vs_vector_keys(has_bait2)
+    for row in stats.values():
+        for key in keys:
+            if key in row:
+                row[key + suffix] = row.pop(key)
+    return stats
+
+
+def _merge_bait_vs_vector_norm(stats, stats_norm, has_bait2):
+    """Copies the _norm run's Bait-vs-Vector columns into `stats` (already
+    _raw-suffixed by _suffix_bait_vs_vector) in place."""
+    keys = _bait_vs_vector_keys(has_bait2)
+    for gene, row_norm in stats_norm.items():
+        row = stats.setdefault(gene, {})
+        for key in keys:
+            if key in row_norm:
+                row[key + '_norm'] = row_norm[key]
+
+
 def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, junction_fn):
     """Builds one bait's per-gene value maps for the hit-criteria panel.
     junction_fn(dataset_key, gene) -> percentage dict - either backed by
@@ -403,17 +471,18 @@ def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, jun
     identical maps either way."""
     suffix = 'bait%d' % bait_num
     sel_key, non_key = 'Bait%dS' % bait_num, 'Bait%dN' % bait_num
-    maps = {k: {} for k in ('p', 'pval', 'infr', 'ratio', 'deseq2', 'enr', 'adjenr')}
+    maps = {k: {} for k in ('p', 'pval_raw', 'pval_norm', 'infr', 'ratio', 'deseq2', 'enr', 'adjenr')}
     for g in genes:
         brow = bayesian_stats.get(g, {})
         srow = stats.get(g, {})
         maps['p'][g] = _as_float_or_none(brow.get('pBait%d_Vec' % bait_num))
-        maps['pval'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector' % suffix))
+        maps['pval_raw'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector_raw' % suffix))
+        maps['pval_norm'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector_norm' % suffix))
         maps['infr'][g] = junction_fn(sel_key, g)['in_frame']
         p_sel = ppm_data.get(sel_key, {}).get(g, 0.0)
         p_non = ppm_data.get(non_key, {}).get(g, 0.0)
-        maps['ratio'][g] = (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS)
-        maps['deseq2'][g] = _as_float_or_none(srow.get('log2FoldChange_%s_vs_vector' % suffix))
+        maps['ratio'][g] = _raw_enrichment_ratio(p_sel, p_non)
+        maps['deseq2'][g] = _as_float_or_none(srow.get('log2FoldChange_%s_vs_vector_raw' % suffix))
         maps['enr'][g] = _as_float_or_none(brow.get('Enr%d' % bait_num))
         maps['adjenr'][g] = _as_float_or_none(brow.get('AdjEnr%d' % bait_num))
     return maps
@@ -489,7 +558,8 @@ def _parse_sm_csv(path):
     # Fixed field order within each block - see _write_workbook's `fields`/
     # `vector_fields` lists.
     BAIT_OFFSETS = {'ppm_non': 0, 'ppm_sel': 1, 'ratio': 2, 'enr': 3, 'adjenr': 4,
-                    'deseq2': 5, 'p': 6, 'pval': 7, 'infr_sel': 8, 'infr_non': 9}
+                    'deseq2': 5, 'p': 6, 'pval_raw': 7, 'pval_norm': 8,
+                    'infr_sel': 9, 'infr_non': 10}
     VECTOR_OFFSETS = {'ppm_non': 0, 'ppm_sel': 1, 'ratio': 2, 'deseq2': 3, 'pval': 4,
                       'infr_sel': 5, 'infr_non': 6, 'outframe_non': 7, 'backward_non': 8}
 
@@ -527,9 +597,10 @@ def _parse_sm_csv(path):
             ppm_data['Bait%dS' % bait_num][g] = _to_float(get('ppm_sel')) or 0.0
             brow['Enr%d' % bait_num] = get('enr')
             brow['AdjEnr%d' % bait_num] = get('adjenr')
-            srow['log2FoldChange_%s_vs_vector' % suffix] = get('deseq2')
+            srow['log2FoldChange_%s_vs_vector_raw' % suffix] = get('deseq2')
             brow['pBait%d_Vec' % bait_num] = get('p')
-            srow['pvalue_%s_vs_vector' % suffix] = get('pval')
+            srow['pvalue_%s_vs_vector_raw' % suffix] = get('pval_raw')
+            srow['pvalue_%s_vs_vector_norm' % suffix] = get('pval_norm')
             junction_flat[('Bait%dS' % bait_num, g)] = {'in_frame': _to_float(get('infr_sel')) or 0.0}
             junction_flat[('Bait%dN' % bait_num, g)] = {'in_frame': _to_float(get('infr_non')) or 0.0}
 
@@ -573,7 +644,17 @@ def _parse_sm_csv(path):
     }
     dataset_keys = ['Bait1S', 'Bait1N'] + (['Bait2S', 'Bait2N'] if has_bait2 else []) + \
                   ['Vector1S', 'Vector1N', 'Vector2S', 'Vector2N']
-    csv_paths = {k: '(loaded from %s)' % os.path.basename(path) for k in dataset_keys}
+    # The real paths are sitting in the file's own header rows (written by
+    # _write_workbook as e.g. "Bait1_Selected,/Volumes/.../summary.csv") -
+    # read them back by label rather than substituting a placeholder, so a
+    # reloaded-then-re-exported workbook still names its actual inputs.
+    label_to_key = {v: k for k, v in dataset_labels.items()}
+    csv_paths = {}
+    for row in rows[:group_row_i]:
+        if len(row) >= 2 and row[0] in label_to_key:
+            csv_paths[label_to_key[row[0]]] = row[1]
+    for k in dataset_keys:
+        csv_paths.setdefault(k, '(path not found in %s)' % os.path.basename(path))
 
     return {
         'name': os.path.splitext(os.path.basename(path))[0], 'genes': genes, 'has_bait2': has_bait2,
@@ -693,8 +774,10 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self._active_source = None
 
         self._build_export_panel()
+        self._build_results_panel()
+        self.resize(self.width() + 480, self.height())
 
-        self.log("Stat Maker v6 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
+        self.log("Stat Maker v7 - collation + DESeq2 statistics (Bait1 required, Bait2 optional)")
         self.log("Found Rscript: %s" % self.rscript_exe if self.rscript_exe else
                  "Rscript not found on this machine yet.")
         if self.jags_exe and self.jags_compatible:
@@ -1016,8 +1099,11 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             self.b2_criteria['find_btn'].setEnabled(run['has_bait2'])
             self.b2_criteria['export_btn'].setEnabled(run['has_bait2'])
             self.bait2_criteria_group.setVisible(run['has_bait2'])
+            self.bait2_results_group.setVisible(run['has_bait2'])
             self.b1_count_label.setText('')
             self.b2_count_label.setText('')
+            self.b1_results_table.setRowCount(0)
+            self.b2_results_table.setRowCount(0)
             self.source_label.setText("Active source: just-completed run")
             self.export_name_edit.setText(datetime.now().strftime('stat_maker_%d%b%Y-%H%M%S'))
         else:
@@ -1055,7 +1141,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         sc.build_collated_input_v5(raw_count_data, run_out_dir, collated_path, has_bait2)
         log_cb("Wrote %s%s" % (collated_path, " (Bait1 + Bait2 + Vector)" if has_bait2 else " (Bait1 + Vector only)"))
 
-        log_cb("Running DESeq2 statistics (this can take a minute)...")
+        log_cb("Running DESeq2 statistics on raw counts + poscounts normalization (p-value_raw)...")
         r_output, overdispersion = sc.run_r_script(R_SCRIPT_PATH, collated_path, self.rscript_exe)
         for line in r_output.splitlines():
             log_cb("  [R] " + line)
@@ -1064,6 +1150,20 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
 
         stats_csv = os.path.join(run_out_dir, 'everything_combined.csv')
         stats = sc.load_stats_output(stats_csv)
+        stats = _suffix_bait_vs_vector(stats, has_bait2, '_raw')
+
+        log_cb("Running DESeq2 statistics again on normalized PPM data, as described in "
+               "Y2H-SCORES (p-value_norm)...")
+        ppm_data_for_norm = {k: sc.load_ppm_summed(path) for k, path in csv_paths.items()}
+        norm_run_dir = os.path.join(run_out_dir, 'norm')
+        os.makedirs(norm_run_dir, exist_ok=True)
+        collated_path_norm = os.path.join(norm_run_dir, 'collated_input.csv')
+        sc.build_collated_input_v3(ppm_data_for_norm, norm_run_dir, collated_path_norm, has_bait2)
+        r_output_norm, _ = sc.run_r_script(R_SCRIPT_PATH, collated_path_norm, self.rscript_exe)
+        for line in r_output_norm.splitlines():
+            log_cb("  [R norm] " + line)
+        stats_norm = sc.load_stats_output(os.path.join(norm_run_dir, 'everything_combined.csv'))
+        _merge_bait_vs_vector_norm(stats, stats_norm, has_bait2)
 
         log_cb("Running Bayesian/MCMC statistics (analyzeDeepn via JAGS - this is the slow "
                "step, several minutes)...")
@@ -1315,10 +1415,8 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             vals = [ppm_data[k].get(gene, 0.0) for k in ('Vector1' + cond, 'Vector2' + cond) if k in ppm_data]
             return sum(vals) / len(vals) if vals else 0.0
 
-        # Pseudocount matches summary.data.deepn()'s Enr1 formula
-        # (log2((Bait+0.05)/(Vec+0.05))) for consistency with the MCMC-side
-        # raw ratio, even though this column is fold-change, not log2.
-        RAW_ENR_EPS = 0.05
+        # See _raw_enrichment_ratio - denominator-only pseudocount, unlike
+        # Enr1's symmetric one, so 0-Select naturally comes out to ratio 0.
 
         col = 1
         bait_blocks = [('Bait1', 'bait1', 'Enr1', 'AdjEnr1', 'pBait1_Vec')]
@@ -1338,11 +1436,12 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 ('raw enrichment (ppm select/non)', 'raw_enr', None, 'Linear FC', None),
                 (enr_key, 'bayesian', enr_key, 'log2', fmt_field_bayesian),
                 (adjenr_key, 'bayesian', adjenr_key, 'log2', fmt_field_bayesian),
-                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'log2FoldChange_%s_vs_vector' % suffix, 'log2 FC', fmt_field_deseq2),
+                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'log2FoldChange_%s_vs_vector_raw' % suffix, 'log2 FC', fmt_field_deseq2),
                 (pvec_key, 'bayesian', pvec_key, 'P', fmt_field_bayesian),
-                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector' % suffix, 'p-value', fmt_field_deseq2),
-                ('in-frame:Forward (Select)', 'junction', ('%sS' % bait_label, 'in_frame'), 'Percent', fmt_field_select),
-                ('in-frame:Forward (Non)', 'junction', ('%sN' % bait_label, 'in_frame'), 'Percent', None),
+                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector_raw' % suffix, 'p-value_raw', fmt_field_deseq2),
+                ('DESeq2 (%s vs Vector)' % bait_label, 'deseq2', 'pvalue_%s_vs_vector_norm' % suffix, 'p-value_norm', fmt_field_deseq2),
+                ('in-frame:Forward', 'junction', ('%sS' % bait_label, 'in_frame'), '%_SEL', fmt_field_select),
+                ('in-frame:Forward', 'junction', ('%sN' % bait_label, 'in_frame'), '%_NON', None),
             ]
             for label, kind, extra, unit, fld_fmt in fields:
                 ws.write(field_row, col, label, fld_fmt or fmt_field)
@@ -1369,10 +1468,10 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             ('raw enrichment (ppm select/non)', 'raw_enr', None, 'Linear FC', None),
             ('Vector Enrichment (DESeq2)', 'deseq2', 'log2FoldChange_vector', 'log2 FC', fmt_field_deseq2),
             ('Vector Enrichment (DESeq2)', 'deseq2', 'pvalue_vector', 'p-value', fmt_field_deseq2),
-            ('in-frame:Forward (Select)', 'junction', ('S', 'in_frame'), 'Percent', fmt_field_select),
-            ('in-frame:Forward (Non)', 'junction', ('N', 'in_frame'), 'Percent', None),
-            ('out-frame:Forward (Non)', 'junction', ('N', 'not_in_frame'), 'Percent', None),
-            ('backward (Non)', 'junction', ('N', 'backwards'), 'Percent', None),
+            ('in-frame:Forward', 'junction', ('S', 'in_frame'), '%_SEL', fmt_field_select),
+            ('in-frame:Forward', 'junction', ('N', 'in_frame'), '%_NON', None),
+            ('out-frame:Forward', 'junction', ('N', 'not_in_frame'), '%_NON', None),
+            ('backward', 'junction', ('N', 'backwards'), '%_NON', None),
         ]
         for label, kind, extra, unit, fld_fmt in vector_fields:
             ws.write(field_row, col, label, fld_fmt or fmt_field)
@@ -1403,9 +1502,14 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             deseq2_blocks.append(('Vector Enrichment (DESeq2)', 'vector', ['pvalue', 'log2FoldChange', 'Enrichment_score']))
             if has_bait2:
                 deseq2_blocks.append(('Bait1 vs Bait2 Specificity (DESeq2)', 'specificity', ['pvalue', 'log2FoldChange']))
-            deseq2_blocks.append(('Bait1 vs Vector (DESeq2)', 'bait1_vs_vector', ['pvalue', 'log2FoldChange']))
+            # suffix here matches the _raw-suffixed keys _suffix_bait_vs_vector
+            # renamed Bait-vs-Vector to in `stats` (v7's raw/norm split) -
+            # this old-report block duplicates the same raw-counts/poscounts
+            # p-value already shown in the main Bait1/Bait2 stats block above,
+            # not the newer p-value_norm (which has its own column there).
+            deseq2_blocks.append(('Bait1 vs Vector (DESeq2)', 'bait1_vs_vector_raw', ['pvalue', 'log2FoldChange']))
             if has_bait2:
-                deseq2_blocks.append(('Bait2 vs Vector (DESeq2)', 'bait2_vs_vector', ['pvalue', 'log2FoldChange']))
+                deseq2_blocks.append(('Bait2 vs Vector (DESeq2)', 'bait2_vs_vector_raw', ['pvalue', 'log2FoldChange']))
 
             for label, suffix, fields in deseq2_blocks:
                 start_col = col
@@ -1475,7 +1579,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 elif kind == 'raw_enr':
                     p_sel = ppm_data.get(sel_key, {}).get(gene, 0.0)
                     p_non = ppm_data.get(non_key, {}).get(gene, 0.0)
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), num_fmt)
+                    ws.write_number(data_row, wcol, _raw_enrichment_ratio(p_sel, p_non), num_fmt)
                 elif kind == 'bayesian':
                     # Leave genuinely blank (not '') when missing - see the
                     # sorting-order note further down for why this matters.
@@ -1497,7 +1601,7 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 elif kind == 'raw_enr':
                     p_sel = vector_mean_ppm(gene, 'S')
                     p_non = vector_mean_ppm(gene, 'N')
-                    ws.write_number(data_row, wcol, (p_sel + RAW_ENR_EPS) / (p_non + RAW_ENR_EPS), num_fmt)
+                    ws.write_number(data_row, wcol, _raw_enrichment_ratio(p_sel, p_non), num_fmt)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] not in ('NA', ''):
                         ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
@@ -1581,7 +1685,10 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         p_sel = ClickThroughSelector(
             [None] + [round(0.1 * i, 1) for i in range(1, 10)],
             lambda v: 'none' if v is None else 'P > %.1f' % v)
-        pval_sel = ClickThroughSelector(
+        pval_raw_sel = ClickThroughSelector(
+            [None, 0.1, 0.01, 0.001, 0.0001],
+            lambda v: 'none' if v is None else 'p ≤ %g' % v)
+        pval_norm_sel = ClickThroughSelector(
             [None, 0.1, 0.01, 0.001, 0.0001],
             lambda v: 'none' if v is None else 'p ≤ %g' % v)
         infr_sel = ClickThroughSelector(
@@ -1594,19 +1701,23 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         # real enrichment) - a reasonable starting cut, not "none"/off.
         p_sel.index = 5
         p_sel._refresh()
-        pval_sel.index = 1
-        pval_sel._refresh()
+        pval_raw_sel.index = 1
+        pval_raw_sel._refresh()
+        pval_norm_sel.index = 1
+        pval_norm_sel._refresh()
         infr_sel.index = 80
         infr_sel._refresh()
         fold_sel.index = 2
         fold_sel._refresh()
         sort_combo = QtWidgets.QComboBox()
-        sort_combo.addItems(['DESeq2 (%s vs Vector)' % bait_label, 'Enr%d' % bait_num, 'AdjEnr%d' % bait_num])
+        sort_combo.addItems(['DESeq2 (%s vs Vector)' % bait_label, 'Enr%d' % bait_num,
+                              'AdjEnr%d' % bait_num, 'ppm/ppm'])
 
-        row('P (probability):', p_sel)
-        row('p-value:', pval_sel)
+        row('P (probability, MCMC):', p_sel)
+        row('p-value_raw (DESeq2):', pval_raw_sel)
+        row('p-value_norm (DESeq2):', pval_norm_sel)
         row('% in-frame:Forward:', infr_sel)
-        row('Positive enrichment fold:', fold_sel)
+        row('Enrichment Fold:', fold_sel)
         row('Sort by:', sort_combo)
 
         find_row = QtWidgets.QHBoxLayout()
@@ -1627,7 +1738,8 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         layout.addWidget(export_btn)
 
         widgets = {
-            'p': p_sel, 'pval': pval_sel, 'infr': infr_sel, 'fold': fold_sel,
+            'p': p_sel, 'pval_raw': pval_raw_sel, 'pval_norm': pval_norm_sel,
+            'infr': infr_sel, 'fold': fold_sel,
             'sort_combo': sort_combo, 'find_btn': find_btn, 'count_label': count_label,
             'export_btn': export_btn,
         }
@@ -1641,12 +1753,63 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
             export_btn.clicked.connect(self.export_sorted_b2_clicked)
         return widgets, group
 
+    RESULTS_COLUMNS = ['Gene', 'ppm non', 'ppm select', 'Enr ppm SEL/NON',
+                       'in-frame:Forward (Select)']
+    RESULTS_COLUMN_WIDTHS = [80, 70, 70, 120, 100]
+
+    def _build_results_panel(self):
+        """Fifth column: per-bait table of the genes currently passing that
+        bait's hit criteria (the same list _matching_genes() already
+        computes for the Find count) - a quick-scan view, not the full
+        report, so only a small fixed subset of columns is shown."""
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        self.b1_results_table, b1_results_group = self._build_results_table('Bait1')
+        self.b2_results_table, self.bait2_results_group = self._build_results_table('Bait2')
+        layout.addWidget(b1_results_group)
+        layout.addWidget(self.bait2_results_group)
+
+        self.results_panel = panel
+        self.mainLayout.addWidget(panel)
+
+    def _build_results_table(self, bait_label):
+        group = QtWidgets.QGroupBox('%s Matches' % bait_label)
+        layout = QtWidgets.QVBoxLayout(group)
+        table = QtWidgets.QTableWidget(0, len(self.RESULTS_COLUMNS))
+        table.setHorizontalHeaderLabels(self.RESULTS_COLUMNS)
+        table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        for col, width in enumerate(self.RESULTS_COLUMN_WIDTHS):
+            table.setColumnWidth(col, width)
+        layout.addWidget(table)
+        return table, group
+
+    def _populate_results_table(self, table, bait_num, widgets):
+        source = self._active_source
+        maps = source['maps1'] if bait_num == 1 else source['maps2']
+        sort_key = self._sort_key_from_combo(widgets['sort_combo'])
+        genes = sorted(self._matching_genes(bait_num, widgets),
+                        key=lambda g: _sort_key_value(g, sort_key, maps), reverse=True)
+        ppm_sel = source['ppm_data'].get('Bait%dS' % bait_num, {})
+        ppm_non = source['ppm_data'].get('Bait%dN' % bait_num, {})
+
+        table.setRowCount(len(genes))
+        for row, g in enumerate(genes):
+            values = [g, ppm_non.get(g, 0.0), ppm_sel.get(g, 0.0),
+                      maps['ratio'].get(g), maps['infr'].get(g)]
+            for col, val in enumerate(values):
+                text = val if isinstance(val, str) else ('' if val is None else '%.4g' % val)
+                table.setItem(row, col, QtWidgets.QTableWidgetItem(text))
+
     @staticmethod
     def _sort_key_from_combo(combo):
-        return ['deseq2', 'enr', 'adjenr'][combo.currentIndex()]
+        return ['deseq2', 'enr', 'adjenr', 'ratio'][combo.currentIndex()]
 
     def _criteria_dict(self, widgets):
-        return {'p': widgets['p'].value, 'pval': widgets['pval'].value,
+        return {'p': widgets['p'].value, 'pval_raw': widgets['pval_raw'].value,
+               'pval_norm': widgets['pval_norm'].value,
                'infr': widgets['infr'].value, 'fold': widgets['fold'].value}
 
     def _matching_genes(self, bait_num, widgets):
@@ -1669,12 +1832,14 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         n = len(self._matching_genes(1, self.b1_criteria))
         d = self._n_above_3ppm_selected(self._active_source, 1)
         self.b1_count_label.setText("%d / %d" % (n, d))
+        self._populate_results_table(self.b1_results_table, 1, self.b1_criteria)
 
     @QtCore.pyqtSlot()
     def find_b2_clicked(self):
         n = len(self._matching_genes(2, self.b2_criteria))
         d = self._n_above_3ppm_selected(self._active_source, 2)
         self.b2_count_label.setText("%d / %d" % (n, d))
+        self._populate_results_table(self.b2_results_table, 2, self.b2_criteria)
 
     def _source_write_args(self, source):
         """Common args _write_workbook needs, regardless of whether
@@ -1797,8 +1962,11 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
         self.b2_criteria['find_btn'].setEnabled(parsed['has_bait2'])
         self.b2_criteria['export_btn'].setEnabled(parsed['has_bait2'])
         self.bait2_criteria_group.setVisible(parsed['has_bait2'])
+        self.bait2_results_group.setVisible(parsed['has_bait2'])
         self.b1_count_label.setText('')
         self.b2_count_label.setText('')
+        self.b1_results_table.setRowCount(0)
+        self.b2_results_table.setRowCount(0)
         self.source_label.setText("Active source: %s" % parsed['name'])
         self.export_name_edit.setText(parsed['name'])
         self.log("Loaded %s (%d genes%s)"
