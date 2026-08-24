@@ -598,8 +598,8 @@ class ClickThroughSelector(QtWidgets.QWidget):
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.prev_btn = QtWidgets.QPushButton('◀')
-        self.next_btn = QtWidgets.QPushButton('▶')
+        self.prev_btn = QtWidgets.QPushButton('<')
+        self.next_btn = QtWidgets.QPushButton('>')
         self.prev_btn.setFixedWidth(24)
         self.next_btn.setFixedWidth(24)
         self.value_label = QtWidgets.QLabel()
