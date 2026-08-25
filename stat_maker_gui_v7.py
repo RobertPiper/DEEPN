@@ -474,6 +474,12 @@ def _merge_bait_vs_vector_norm(stats, stats_norm, has_bait2):
                 row[key + '_norm'] = row_norm[key]
 
 
+# The Bayesian R script's Bait1 column naming, single-bait run vs dual-bait
+# run - see _build_bait_value_maps and _write_workbook's 'bayesian' field
+# handling, both of which need this fallback.
+_BAIT1_UNSUFFIXED_BAYESIAN_KEY = {'Enr1': 'Enr', 'AdjEnr1': 'AdjEnr', 'pBait1_Vec': 'p'}
+
+
 def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, junction_fn):
     """Builds one bait's per-gene value maps for the hit-criteria panel.
     junction_fn(dataset_key, gene) -> percentage dict - either backed by
@@ -486,7 +492,20 @@ def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, jun
     for g in genes:
         brow = bayesian_stats.get(g, {})
         srow = stats.get(g, {})
-        maps['p'][g] = _as_float_or_none(brow.get('pBait%d_Vec' % bait_num))
+        # The Bayesian R script names its own output columns differently
+        # depending on whether a second bait was supplied - suffixed
+        # (pBait1_Vec/Enr1/AdjEnr1) when Bait2 is present, unsuffixed
+        # (p/Enr/AdjEnr) for a single-bait run. Only bait_num==1 can ever
+        # be a single-bait run (bait_num==2 requires has_bait2=True, which
+        # always uses the suffixed form), so falling back to the unsuffixed
+        # key there is safe - a dual-bait run never populates it.
+        p_key = 'pBait%d_Vec' % bait_num
+        enr_key = 'Enr%d' % bait_num
+        adjenr_key = 'AdjEnr%d' % bait_num
+        p_val = brow.get(p_key, brow.get(_BAIT1_UNSUFFIXED_BAYESIAN_KEY.get(p_key)))
+        enr_val = brow.get(enr_key, brow.get(_BAIT1_UNSUFFIXED_BAYESIAN_KEY.get(enr_key)))
+        adjenr_val = brow.get(adjenr_key, brow.get(_BAIT1_UNSUFFIXED_BAYESIAN_KEY.get(adjenr_key)))
+        maps['p'][g] = _as_float_or_none(p_val)
         maps['pval_raw'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector_raw' % suffix))
         maps['pval_norm'][g] = _as_float_or_none(srow.get('pvalue_%s_vs_vector_norm' % suffix))
         maps['infr'][g] = junction_fn(sel_key, g)['in_frame']
@@ -494,8 +513,8 @@ def _build_bait_value_maps(bait_num, genes, ppm_data, stats, bayesian_stats, jun
         p_non = ppm_data.get(non_key, {}).get(g, 0.0)
         maps['ratio'][g] = _raw_enrichment_ratio(p_sel, p_non)
         maps['deseq2'][g] = _as_float_or_none(srow.get('log2FoldChange_%s_vs_vector_raw' % suffix))
-        maps['enr'][g] = _as_float_or_none(brow.get('Enr%d' % bait_num))
-        maps['adjenr'][g] = _as_float_or_none(brow.get('AdjEnr%d' % bait_num))
+        maps['enr'][g] = _as_float_or_none(enr_val)
+        maps['adjenr'][g] = _as_float_or_none(adjenr_val)
     return maps
 
 
@@ -1594,8 +1613,18 @@ class Stat_Maker_Gui(QtWidgets.QMainWindow, form_class):
                 elif kind == 'bayesian':
                     # Leave genuinely blank (not '') when missing - see the
                     # sorting-order note further down for why this matters.
-                    if extra in brow and brow[extra] not in ('NA', ''):
-                        ws.write_number(data_row, wcol, float(brow[extra]), num_fmt)
+                    # The Bayesian R script names its Bait1 columns
+                    # unsuffixed (Enr/AdjEnr/p) for a single-bait run, vs
+                    # suffixed (Enr1/AdjEnr1/pBait1_Vec) when Bait2 is
+                    # present - fall back to the unsuffixed name if the
+                    # suffixed one isn't there (only relevant for Bait1;
+                    # Bait2 always implies has_bait2, which always uses
+                    # the suffixed form).
+                    key = extra
+                    if key not in brow:
+                        key = _BAIT1_UNSUFFIXED_BAYESIAN_KEY.get(extra, extra)
+                    if key in brow and brow[key] not in ('NA', ''):
+                        ws.write_number(data_row, wcol, float(brow[key]), num_fmt)
                 elif kind == 'deseq2':
                     if extra in srow and srow[extra] not in ('NA', ''):
                         ws.write_number(data_row, wcol, float(srow[extra]), num_fmt)
