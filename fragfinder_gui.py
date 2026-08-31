@@ -89,9 +89,14 @@ class CalculateDepth_Thread(QtCore.QThread):
         self.parent = parent
 
     def make_list_of_mRNA(self):
+        # .prn mRNA sequences are stored lowercase, but real reads (and
+        # reverse_complement()'s output, which uppercases internally) are
+        # uppercase - without this .upper(), the forward-strand comparison in
+        # run() below silently never matches, undercounting read depth to
+        # whatever the reverse-complement side alone picks up.
         sequence = []
         for position in range(0, len(self.parent.selected_gene['mRNA']), self.parent.interval):
-            seq = self.parent.selected_gene['mRNA'][position:position + 20]
+            seq = self.parent.selected_gene['mRNA'][position:position + 20].upper()
             sequence.append((position, seq))
         return sequence
 
