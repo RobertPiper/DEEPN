@@ -191,12 +191,12 @@ class QBPlot(QtWidgets.QDialog, form_class):
         max_count = 0
         for row, row_item in enumerate(data):
             if row != 0:
-                if row_item[4] == "In Frame" and row_item[3] == "In ORF":
+                if row_item[4] == "in_frame" and row_item[3] == "in_orf":
                     x_blue.append(int(row_item[0]))
                     y_blue.append(float(row_item[1]))
                     if max_count < float(row_item[1]):
                         max_count = float(row_item[1])
-                elif row_item[4] == "In Frame" and row_item[3] == "Upstream":
+                elif row_item[4] == "in_frame" and row_item[3] == "upstream":
                     x_lightblue.append(int(row_item[0]))
                     y_lightblue.append(float(row_item[1]))
                     if max_count < float(row_item[1]):
